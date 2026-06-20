@@ -1,0 +1,11 @@
+{"type":"FeatureCollection","features":[
+{"type":"Feature","properties":{"name":"AirTrain Jamaica"},"geometry":{"type":"Point","coordinates":[-73.8076,40.7019]}},
+{"type":"Feature","properties":{"name":"AirTrain Howard Beach"},"geometry":{"type":"Point","coordinates":[-73.8305,40.6607]}},
+{"type":"Feature","properties":{"name":"Lefferts Blvd"},"geometry":{"type":"Point","coordinates":[-73.8200,40.6680]}},
+{"type":"Feature","properties":{"name":"Federal Circle"},"geometry":{"type":"Point","coordinates":[-73.7898,40.6650]}},
+{"type":"Feature","properties":{"name":"JFK Terminal 1"},"geometry":{"type":"Point","coordinates":[-73.7912,40.6437]}},
+{"type":"Feature","properties":{"name":"JFK Terminal 4"},"geometry":{"type":"Point","coordinates":[-73.7820,40.6440]}},
+{"type":"Feature","properties":{"name":"JFK T5 (TWA Hotel)"},"geometry":{"type":"Point","coordinates":[-73.7765,40.6457]}},
+{"type":"Feature","properties":{"name":"JFK Terminal 7"},"geometry":{"type":"Point","coordinates":[-73.7836,40.6483]}},
+{"type":"Feature","properties":{"name":"JFK Terminal 8"},"geometry":{"type":"Point","coordinates":[-73.7890,40.6453]}}
+]}
