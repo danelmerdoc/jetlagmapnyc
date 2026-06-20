@@ -6,18 +6,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link href="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.css" rel="stylesheet" />
 <script src="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
 <style>
   :root { --panel: rgba(255,248,236,.96); --text:#2a2418; --border:#e8c878; --accent:#ffb020; }
   body.dark { --panel: rgba(20,24,32,.94); --text:#f5f0e6; --border:#ffb020; --accent:#ffc848; }
   html,body { margin:0; height:100%; font-family:-apple-system,Helvetica Neue,Helvetica,Arial,sans-serif; }
   #map { position:absolute; inset:0; }
-  #panel {
-    position:absolute; top:12px; left:12px; z-index:2; background:var(--panel); color:var(--text);
-    border:2px solid var(--border); border-radius:12px; padding:12px 14px; min-width:220px;
+  .panel {
+    position:absolute; top:12px; z-index:2; background:var(--panel); color:var(--text);
+    border:2px solid var(--border); border-radius:12px; padding:12px 14px;
     box-shadow:0 6px 24px rgba(0,0,0,.2); backdrop-filter:blur(8px);
+    max-height:calc(100vh - 24px); overflow-y:auto;
   }
-  #panel h1 { font-size:14px; margin:0 0 2px; letter-spacing:.04em; text-transform:uppercase; }
-  #panel .sub { font-size:11px; opacity:.75; margin:0 0 10px; line-height:1.35; }
+  #panel { left:12px; min-width:220px; max-width:260px; }
+  #game-panel { right:12px; width:280px; }
+  .panel h1, .panel h2 { font-size:14px; margin:0 0 2px; letter-spacing:.04em; text-transform:uppercase; }
+  .panel h2 { margin-top:10px; }
+  .sub { font-size:11px; opacity:.75; margin:0 0 10px; line-height:1.35; }
   .row { display:flex; align-items:center; gap:8px; font-size:13px; padding:3px 0; cursor:pointer; }
   .row input { accent-color:var(--accent); }
   .sw { width:22px; height:4px; border-radius:2px; flex:0 0 auto; }
@@ -29,11 +34,31 @@
   .seg button.active { background:var(--accent); color:#1a1408; border-color:var(--accent); font-weight:600; }
   .mapboxgl-popup-content { font-size:13px; font-weight:600; padding:6px 10px; border-radius:8px; }
   hr { border:none; border-top:1px solid var(--border); margin:8px 0; }
+  .game-field { display:flex; flex-direction:column; gap:4px; margin:6px 0; font-size:12px; }
+  .game-field label { font-weight:600; opacity:.85; }
+  .game-field input, .game-field select, .game-field textarea {
+    font-size:12px; padding:6px 8px; border:1px solid var(--border); border-radius:8px;
+    background:transparent; color:var(--text);
+  }
+  .game-row { display:flex; gap:6px; }
+  .game-row input { flex:1; }
+  .game-btn {
+    font-size:12px; padding:6px 10px; border:1px solid var(--border); border-radius:8px;
+    background:var(--accent); color:#1a1408; font-weight:600; cursor:pointer; width:100%; margin-top:4px;
+  }
+  .game-btn.secondary { background:transparent; color:var(--text); font-weight:500; }
+  .game-hint { font-size:11px; opacity:.8; margin:6px 0 0; line-height:1.35; }
+  .game-item { border:1px solid var(--border); border-radius:8px; padding:8px; margin:6px 0; font-size:11px; }
+  .game-item-head { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+  .game-dot { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
+  .game-rm { margin-left:auto; border:none; background:transparent; color:var(--text); cursor:pointer; font-size:16px; line-height:1; }
+  .game-status { margin-top:4px; font-weight:600; color:var(--accent); }
+  .game-item-body { opacity:.85; }
 </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="panel">
+<div id="panel" class="panel">
   <h1>Jet Lag: The Game</h1>
   <p class="sub">NYC Hide + Seek · Playable transit · 0.375 mi hide zones</p>
   <div class="seg" id="theme">
@@ -42,7 +67,38 @@
   </div>
   <div id="toggles"></div>
 </div>
+<div id="game-panel" class="panel">
+  <h2>Game Tools</h2>
+  <p class="sub">Radius &amp; thermometer questions · right-click map to copy coords</p>
+  <div class="game-field">
+    <label>Hider coordinates</label>
+    <textarea id="game-coord-paste" rows="2" placeholder="Paste lat, lng  or  lng, lat"></textarea>
+    <div class="game-row">
+      <input id="game-lat" type="number" step="any" placeholder="Latitude" />
+      <input id="game-lng" type="number" step="any" placeholder="Longitude" />
+    </div>
+    <button type="button" class="game-btn" id="game-set-hider">Set hider position</button>
+    <button type="button" class="game-btn secondary" id="game-clear-hider">Clear hider</button>
+  </div>
+  <hr />
+  <div class="game-field">
+    <label>New radius</label>
+    <div class="game-row">
+      <input id="game-radius-val" type="number" step="any" value="1" min="0.01" />
+      <select id="game-radius-unit">
+        <option value="miles" selected>miles</option>
+        <option value="kilometers">km</option>
+      </select>
+    </div>
+    <button type="button" class="game-btn" id="game-add-radius">+ Add radius</button>
+    <button type="button" class="game-btn" id="game-add-thermo">+ Add thermometer</button>
+  </div>
+  <p class="game-hint" id="game-hint"></p>
+  <div id="game-list"></div>
+  <button type="button" class="game-btn secondary" id="game-clear-all">Clear all questions</button>
+</div>
 <script src="config.js"></script>
+<script src="game.js"></script>
 <script>
 if (!window.MAPBOX_TOKEN) {
   document.body.innerHTML = '<p style="padding:2rem;font-family:sans-serif">Missing <code>config.js</code>. Copy <code>config.example.js</code> and add your Mapbox token.</p>';
@@ -56,19 +112,19 @@ let theme = 'light';
 const GROUPS = [
   { key:'subway',   label:'Subway',        sw:'#EE352E',
     line:{ file:'data/subway_lines.geojson',     width:2.0, casing:1.6, dash:null },
-    stop:{ file:'data/subway_stations.geojson',  r:2.4, label:false } },
+    stop:{ file:'data/subway_stations.geojson',  r:1.8, label:false } },
   { key:'mnr',      label:'Metro-North',   sw:'#0039A6',
     line:{ file:'data/mnr_lines_play.geojson',   width:3.2, casing:2.2, dash:null },
-    stop:{ file:'data/mnr_stations_play.geojson',r:4.2, label:false } },
+    stop:{ file:'data/mnr_stations_play.geojson',r:3.0, label:false } },
   { key:'lirr',     label:'LIRR',          sw:'#C60C30',
     line:{ file:'data/lirr_lines_play.geojson',  width:3.2, casing:2.2, dash:null },
-    stop:{ file:'data/lirr_stations_play.geojson',r:4.2, label:false } },
+    stop:{ file:'data/lirr_stations_play.geojson',r:3.0, label:false } },
   { key:'airtrain', label:'AirTrain (JFK)',sw:'#00857C',
     line:{ file:'data/airtrain_lines.geojson',   width:2.8, casing:2.0, dash:null },
-    stop:{ file:'data/airtrain_stations.geojson',r:4.0, label:false } },
+    stop:{ file:'data/airtrain_stations.geojson',r:3.0, label:false } },
   { key:'ferry',    label:'Ferries',       sw:'#00839C',
-    line:{ file:'data/ferry_routes.geojson',     width:1.8, casing:0,  dash:[2,1.4] },
-    stop:{ file:'data/ferry_landings.geojson',   r:4.2, label:false } },
+    line:{ file:'data/ferry_routes.geojson',     width:1.4, casing:0,  dash:[2,1.4] },
+    stop:{ file:'data/ferry_landings.geojson',   r:2.0, label:false } },
 ];
 
 const visible = Object.fromEntries(GROUPS.map(g => [g.key, true]));
@@ -78,10 +134,10 @@ let showZones = false;
 function ferryIconDataUrl(colors) {
   const cols = (colors || '#0066ff').split(',').filter(Boolean).slice(0, 6);
   const n = cols.length;
-  const s = 24, c = document.createElement('canvas');
+  const s = 14, c = document.createElement('canvas');
   c.width = s; c.height = s;
   const ctx = c.getContext('2d');
-  const pad = 2, w = s - pad * 2;
+  const pad = 1, w = s - pad * 2;
   if (n === 1) {
     ctx.fillStyle = cols[0]; ctx.fillRect(pad, pad, w, w);
   } else if (n === 2) {
@@ -98,7 +154,7 @@ function ferryIconDataUrl(colors) {
     }
   }
   ctx.strokeStyle = theme === 'dark' ? '#e8eaed' : '#1a1a1a';
-  ctx.lineWidth = 1.2; ctx.strokeRect(pad + 0.5, pad + 0.5, w - 1, w - 1);
+  ctx.lineWidth = 0.8; ctx.strokeRect(pad + 0.5, pad + 0.5, w - 1, w - 1);
   return c.toDataURL();
 }
 
@@ -185,7 +241,8 @@ async function addLayers() {
         id:g.key+'-stop-s', type:'symbol', source:g.key+'-stop',
         layout:{
           visibility:visible[g.key]?'visible':'none',
-          'icon-image':['get','icon'], 'icon-size':0.9,
+          'icon-image':['get','icon'],
+          'icon-size':['interpolate',['linear'],['zoom'], 8, 0.28, 11, 0.38, 14, 0.48],
           'icon-allow-overlap':true, 'icon-ignore-placement':true
         }
       });
@@ -201,10 +258,10 @@ async function addLayers() {
         id:g.key+'-stop-c', type:'circle', source:g.key+'-stop',
         layout:{ visibility:visible[g.key]?'visible':'none' },
         paint:{
-          'circle-radius':['interpolate',['linear'],['zoom'], 9, g.stop.r*0.5, 14, g.stop.r*1.6],
+          'circle-radius':['interpolate',['linear'],['zoom'], 9, g.stop.r*0.45, 14, g.stop.r*1.2],
           'circle-color': theme==='dark' ? '#0d1117' : '#fffef8',
           'circle-stroke-color': g.key==='airtrain' ? '#00857C' : (theme==='dark'?'#e8eaed':'#1a1a1a'),
-          'circle-stroke-width':1.4
+          'circle-stroke-width':1.0
         }
       });
       map.on('click', g.key+'-stop-c', e => {
@@ -216,7 +273,6 @@ async function addLayers() {
     }
   }
 
-  // Borough names on top of everything
   map.addLayer({
     id:'boroughs-label', type:'symbol', source:'borough-labels', minzoom:8,
     layout:{
@@ -228,6 +284,9 @@ async function addLayers() {
     },
     paint:{ 'text-color': labelColor, 'text-halo-color': labelHalo, 'text-halo-width': 2.2 }
   });
+
+  JetLagGame.installMapLayers(map);
+  JetLagGame.renderList();
 }
 
 function setGroupVisible(key, on) {
@@ -240,6 +299,7 @@ function setGroupVisible(key, on) {
 }
 
 map.on('style.load', addLayers);
+JetLagGame.bindUI();
 
 const toggles = document.getElementById('toggles');
 for (const g of GROUPS) {
