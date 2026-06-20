@@ -42,8 +42,13 @@
   </div>
   <div id="toggles"></div>
 </div>
+<script src="config.js"></script>
 <script>
-mapboxgl.accessToken = 'pk.eyJ1IjoiZG11cmRvY2giLCJhIjoiY21xazFjNTN4MHB1ejJ4cHptMnV4bGYwaiJ9.d-cWbr_aZ9Z9F0ZbK7ZcaQ';
+if (!window.MAPBOX_TOKEN) {
+  document.body.innerHTML = '<p style="padding:2rem;font-family:sans-serif">Missing <code>config.js</code>. Copy <code>config.example.js</code> and add your Mapbox token.</p>';
+  throw new Error('MAPBOX_TOKEN missing');
+}
+mapboxgl.accessToken = window.MAPBOX_TOKEN;
 
 const STYLES = { light: 'mapbox://styles/mapbox/light-v11', dark: 'mapbox://styles/mapbox/dark-v11' };
 let theme = 'light';
