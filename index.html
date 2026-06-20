@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Jet Lag NYC — Playable Hide &amp; Seek Network</title>
+<title>Jet Lag: The Game — NYC Hide + Seek Map</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link href="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.css" rel="stylesheet" />
 <script src="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.js"></script>
@@ -13,13 +13,13 @@
   #map { position:absolute; inset:0; }
   #panel {
     position:absolute; top:12px; left:12px; z-index:2; background:var(--panel); color:var(--text);
-    border:1px solid var(--border); border-radius:12px; padding:12px 14px; min-width:210px;
-    box-shadow:0 6px 20px rgba(0,0,0,.18); backdrop-filter:blur(8px);
+    border:2px solid var(--border); border-radius:12px; padding:12px 14px; min-width:220px;
+    box-shadow:0 6px 24px rgba(0,0,0,.2); backdrop-filter:blur(8px);
   }
-  #panel h1 { font-size:15px; margin:0 0 2px; }
-  #panel .sub { font-size:11px; opacity:.7; margin:0 0 10px; }
+  #panel h1 { font-size:14px; margin:0 0 2px; letter-spacing:.04em; text-transform:uppercase; }
+  #panel .sub { font-size:11px; opacity:.75; margin:0 0 10px; line-height:1.35; }
   .row { display:flex; align-items:center; gap:8px; font-size:13px; padding:3px 0; cursor:pointer; }
-  .row input { accent-color:#0a84ff; }
+  .row input { accent-color:var(--accent); }
   .sw { width:22px; height:4px; border-radius:2px; flex:0 0 auto; }
   .seg { display:flex; gap:6px; margin:4px 0 10px; }
   .seg button {
@@ -34,8 +34,8 @@
 <body>
 <div id="map"></div>
 <div id="panel">
-  <h1>Jet Lag NYC</h1>
-  <p class="sub">Playable hide &amp; seek transit network</p>
+  <h1>Jet Lag: The Game</h1>
+  <p class="sub">NYC Hide + Seek · Playable transit · 0.375 mi hide zones</p>
   <div class="seg" id="theme">
     <button data-style="light" class="active">Light</button>
     <button data-style="dark">Dark</button>
@@ -48,7 +48,6 @@ mapboxgl.accessToken = 'pk.eyJ1IjoiZG11cmRvY2giLCJhIjoiY21xazFjNTN4MHB1ejJ4cHptM
 const STYLES = { light: 'mapbox://styles/mapbox/light-v11', dark: 'mapbox://styles/mapbox/dark-v11' };
 let theme = 'light';
 
-// group key -> {label, swatch, line layer config, station layer config}
 const GROUPS = [
   { key:'subway',   label:'Subway',        sw:'#EE352E',
     line:{ file:'data/subway_lines.geojson',     width:2.0, casing:1.6, dash:null },
@@ -62,14 +61,41 @@ const GROUPS = [
   { key:'airtrain', label:'AirTrain (JFK)',sw:'#00857C',
     line:{ file:'data/airtrain_lines.geojson',   width:2.8, casing:2.0, dash:null },
     stop:{ file:'data/airtrain_stations.geojson',r:4.0, label:false } },
-  { key:'ferry',    label:'Ferries',       sw:'#0C4DA2',
-    line:{ file:'data/ferry_routes.geojson',     width:2.6, casing:0,  dash:[2,1.4] },
+  { key:'ferry',    label:'Ferries',       sw:'#00839C',
+    line:{ file:'data/ferry_routes.geojson',     width:1.8, casing:0,  dash:[2,1.4] },
     stop:{ file:'data/ferry_landings.geojson',   r:4.2, label:false } },
 ];
 
 const visible = Object.fromEntries(GROUPS.map(g => [g.key, true]));
 let showBoroughs = true;
 let showZones = false;
+
+function ferryIconDataUrl(colors) {
+  const cols = (colors || '#0066ff').split(',').filter(Boolean).slice(0, 6);
+  const n = cols.length;
+  const s = 24, c = document.createElement('canvas');
+  c.width = s; c.height = s;
+  const ctx = c.getContext('2d');
+  const pad = 2, w = s - pad * 2;
+  if (n === 1) {
+    ctx.fillStyle = cols[0]; ctx.fillRect(pad, pad, w, w);
+  } else if (n === 2) {
+    ctx.fillStyle = cols[0]; ctx.fillRect(pad, pad, w / 2, w);
+    ctx.fillStyle = cols[1]; ctx.fillRect(pad + w / 2, pad, w / 2, w);
+  } else {
+    const cx = s / 2, cy = s / 2, r = w / 2;
+    for (let i = 0; i < n; i++) {
+      const a0 = Math.PI * 2 * i / n - Math.PI / 2;
+      const a1 = Math.PI * 2 * (i + 1) / n - Math.PI / 2;
+      ctx.beginPath(); ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, r, a0, a1); ctx.closePath();
+      ctx.fillStyle = cols[i]; ctx.fill();
+    }
+  }
+  ctx.strokeStyle = theme === 'dark' ? '#e8eaed' : '#1a1a1a';
+  ctx.lineWidth = 1.2; ctx.strokeRect(pad + 0.5, pad + 0.5, w - 1, w - 1);
+  return c.toDataURL();
+}
 
 const map = new mapboxgl.Map({
   container:'map', style:STYLES[theme],
@@ -78,17 +104,42 @@ const map = new mapboxgl.Map({
 map.addControl(new mapboxgl.NavigationControl({visualizePitch:false}), 'top-right');
 map.addControl(new mapboxgl.GeolocateControl({positionOptions:{enableHighAccuracy:true},trackUserLocation:true}), 'top-right');
 
-function addLayers() {
+async function addLayers() {
   const casing = theme === 'dark' ? '#0b0e13' : '#ffffff';
   const labelColor = theme === 'dark' ? '#f3f4f6' : '#1f1f1f';
-  const labelHalo  = theme === 'dark' ? '#0b0e13' : '#ffffff';
+  const labelHalo  = theme === 'dark' ? '#0b0e13' : '#fffef8';
   const boroFill   = theme === 'dark' ? '#1e3a5f' : '#dbeafe';
-  const boroLine   = theme === 'dark' ? '#f0f2f5' : '#2b2b2b';
+  const boroLine   = theme === 'dark' ? '#9098a4' : '#666666';
   const TOP = GROUPS[0].key + '-casing';
 
-  // Transit first (top of stack)
+  map.addSource('boroughs', { type:'geojson', data:'data/nyc_boroughs.geojson' });
+  map.addSource('borough-labels', { type:'geojson', data:'data/borough_labels.geojson' });
+  map.addLayer({
+    id:'boroughs-fill', type:'fill', source:'boroughs',
+    layout:{ visibility: showBoroughs ? 'visible' : 'none' },
+    paint:{ 'fill-color': boroFill, 'fill-opacity': 0.06 }
+  }, TOP);
+  map.addLayer({
+    id:'boroughs-line', type:'line', source:'boroughs',
+    layout:{ visibility: showBoroughs ? 'visible' : 'none' },
+    paint:{ 'line-color': boroLine, 'line-opacity': 0.45,
+      'line-width': ['interpolate',['linear'],['zoom'], 8, 0.8, 12, 1.6] }
+  }, TOP);
+
+  fetch('data/hide_zones_meta.json').then(r => r.json()).then(meta => {
+    map.addSource('hide-zones', {
+      type:'image', url:'data/hide_zones.png',
+      coordinates:[[meta.lon0, meta.lat1], [meta.lon1, meta.lat1],
+                   [meta.lon1, meta.lat0], [meta.lon0, meta.lat0]]
+    });
+    map.addLayer({
+      id:'hide-zones', type:'raster', source:'hide-zones',
+      layout:{ visibility: showZones ? 'visible' : 'none' },
+      paint:{ 'raster-opacity': theme === 'dark' ? 0.48 : 0.42 }
+    }, TOP);
+  });
+
   for (const g of GROUPS) {
-    // ---- line source + layers ----
     map.addSource(g.key+'-line', { type:'geojson', data:g.line.file });
     if (g.line.casing > 0) {
       map.addLayer({
@@ -103,112 +154,88 @@ function addLayers() {
       layout:{ 'line-cap':'round','line-join':'round', visibility:visible[g.key]?'visible':'none' },
       paint:Object.assign({
         'line-color':['coalesce',['get','color'], g.sw],
-        'line-width':['interpolate',['linear'],['zoom'], 8, g.line.width*0.6, 14, g.line.width*2.2]
+        'line-width':['interpolate',['linear'],['zoom'], 8, g.line.width*0.55, 14, g.line.width*2.0]
       }, g.line.dash ? {'line-dasharray':g.line.dash} : {})
     });
 
-    // ---- station source + layers ----
-    map.addSource(g.key+'-stop', { type:'geojson', data:g.stop.file });
-    // ---- ferry stops: nested square rings for multi-route colors ----
-    map.addLayer({
-      id:g.key+'-stop-c', type:'circle', source:g.key+'-stop',
-      filter: g.key === 'ferry' ? ['>=', ['coalesce', ['get','color_count'], 1], 1] : ['has','name'],
-      layout:{ visibility:visible[g.key]?'visible':'none' },
-      paint:{
-        'circle-radius':['interpolate',['linear'],['zoom'], 9, g.stop.r*0.55, 14, g.stop.r*1.55],
-        'circle-color': theme==='dark' ? '#0d1117' : '#fffef8',
-        'circle-stroke-color': g.key==='ferry'
-          ? ['coalesce', ['at', 0, ['split', ['get','colors'], ',']], '#0066ff']
-          : (g.key==='airtrain' ? '#00857C' : (theme==='dark'?'#e8eaed':'#1a1a1a')),
-        'circle-stroke-width':1.5
-      }
-    });
     if (g.key === 'ferry') {
-      for (const [i, rad] of [[1, 0.78], [2, 0.58], [3, 0.40], [4, 0.28], [5, 0.18]]) {
-        map.addLayer({
-          id:g.key+`-stop-r${i}`, type:'circle', source:g.key+'-stop',
-          filter:['>=', ['coalesce', ['get','color_count'], 1], i+1],
-          layout:{ visibility:visible[g.key]?'visible':'none' },
-          paint:{
-            'circle-radius':['interpolate',['linear'],['zoom'], 9, g.stop.r*rad*0.55, 14, g.stop.r*rad*1.55],
-            'circle-color': theme==='dark' ? '#0d1117' : '#fffef8',
-            'circle-stroke-color':['at', i, ['split', ['get','colors'], ',']],
-            'circle-stroke-width':1.1
-          }
-        });
+      const raw = await (await fetch(g.stop.file)).json();
+      const iconIds = new Set();
+      for (const f of raw.features) {
+        const cols = f.properties.colors || g.sw;
+        const id = 'ferry-' + cols.replace(/#/g,'').replace(/,/g,'-');
+        f.properties.icon = id;
+        if (!iconIds.has(id)) {
+          iconIds.add(id);
+          const img = await new Promise(res => {
+            const i = new Image();
+            i.onload = () => res(i);
+            i.src = ferryIconDataUrl(cols);
+          });
+          if (!map.hasImage(id)) map.addImage(id, img, { sdf: false });
+        }
       }
-    }
-    if (g.stop.label) {
+      map.addSource(g.key+'-stop', { type:'geojson', data: raw });
       map.addLayer({
-        id:g.key+'-stop-t', type:'symbol', source:g.key+'-stop',
-        minzoom:10,
-        layout:{ visibility:visible[g.key]?'visible':'none',
-          'text-field':['get','name'], 'text-size':11, 'text-offset':[0,1.0],
-          'text-anchor':'top', 'text-font':['DIN Pro Medium','Arial Unicode MS Regular'],
-          'text-allow-overlap':false },
-        paint:{ 'text-color':labelColor, 'text-halo-color':labelHalo, 'text-halo-width':1.4 }
+        id:g.key+'-stop-s', type:'symbol', source:g.key+'-stop',
+        layout:{
+          visibility:visible[g.key]?'visible':'none',
+          'icon-image':['get','icon'], 'icon-size':0.9,
+          'icon-allow-overlap':true, 'icon-ignore-placement':true
+        }
       });
+      map.on('click', g.key+'-stop-s', e => {
+        new mapboxgl.Popup({offset:8}).setLngLat(e.lngLat)
+          .setHTML(`<div>${e.features[0].properties.name||''}</div>`).addTo(map);
+      });
+      map.on('mouseenter', g.key+'-stop-s', () => map.getCanvas().style.cursor='pointer');
+      map.on('mouseleave', g.key+'-stop-s', () => map.getCanvas().style.cursor='');
+    } else {
+      map.addSource(g.key+'-stop', { type:'geojson', data:g.stop.file });
+      map.addLayer({
+        id:g.key+'-stop-c', type:'circle', source:g.key+'-stop',
+        layout:{ visibility:visible[g.key]?'visible':'none' },
+        paint:{
+          'circle-radius':['interpolate',['linear'],['zoom'], 9, g.stop.r*0.5, 14, g.stop.r*1.6],
+          'circle-color': theme==='dark' ? '#0d1117' : '#fffef8',
+          'circle-stroke-color': g.key==='airtrain' ? '#00857C' : (theme==='dark'?'#e8eaed':'#1a1a1a'),
+          'circle-stroke-width':1.4
+        }
+      });
+      map.on('click', g.key+'-stop-c', e => {
+        new mapboxgl.Popup({offset:8}).setLngLat(e.lngLat)
+          .setHTML(`<div>${e.features[0].properties.name||''}</div>`).addTo(map);
+      });
+      map.on('mouseenter', g.key+'-stop-c', () => map.getCanvas().style.cursor='pointer');
+      map.on('mouseleave', g.key+'-stop-c', () => map.getCanvas().style.cursor='');
     }
-
-    // popups on station click
-    map.on('click', g.key+'-stop-c', e => {
-      new mapboxgl.Popup({offset:8}).setLngLat(e.lngLat)
-        .setHTML(`<div>${e.features[0].properties.name||''}</div>`).addTo(map);
-    });
-    map.on('mouseenter', g.key+'-stop-c', () => map.getCanvas().style.cursor='pointer');
-    map.on('mouseleave', g.key+'-stop-c', () => map.getCanvas().style.cursor='');
   }
 
-  // Borough tint (below zones and transit)
-  map.addSource('boroughs', { type:'geojson', data:'data/nyc_boroughs.geojson' });
-  map.addSource('borough-labels', { type:'geojson', data:'data/borough_labels.geojson' });
+  // Borough names on top of everything
   map.addLayer({
-    id:'boroughs-fill', type:'fill', source:'boroughs',
-    layout:{ visibility: showBoroughs ? 'visible' : 'none' },
-    paint:{ 'fill-color': boroFill, 'fill-opacity': 0.06 }
-  }, TOP);
-  map.addLayer({
-    id:'boroughs-line', type:'line', source:'boroughs',
-    layout:{ visibility: showBoroughs ? 'visible' : 'none' },
-    paint:{ 'line-color': boroLine, 'line-opacity': 0.45,
-      'line-width': ['interpolate',['linear'],['zoom'], 8, 0.8, 12, 1.6] }
-  }, TOP);
-  map.addLayer({
-    id:'boroughs-label', type:'symbol', source:'borough-labels', minzoom:9,
+    id:'boroughs-label', type:'symbol', source:'borough-labels', minzoom:8,
     layout:{
       visibility: showBoroughs ? 'visible' : 'none',
       'text-field': ['get','BoroName'],
-      'text-size': 12, 'text-font': ['DIN Pro Medium','Arial Unicode MS Regular']
+      'text-size': ['interpolate',['linear'],['zoom'], 9, 14, 12, 18],
+      'text-font': ['DIN Pro Bold','Arial Unicode MS Bold'],
+      'text-allow-overlap': true, 'text-ignore-placement': true
     },
-    paint:{ 'text-color': labelColor, 'text-halo-color': labelHalo, 'text-halo-width': 1.4 }
-  }, TOP);
-
-  // Hide zones above boroughs, below transit
-  fetch('data/hide_zones_meta.json').then(r => r.json()).then(meta => {
-    map.addSource('hide-zones', {
-      type:'image', url:'data/hide_zones.png',
-      coordinates:[[meta.lon0, meta.lat1], [meta.lon1, meta.lat1],
-                   [meta.lon1, meta.lat0], [meta.lon0, meta.lat0]]
-    });
-    map.addLayer({
-      id:'hide-zones', type:'raster', source:'hide-zones',
-      layout:{ visibility: showZones ? 'visible' : 'none' },
-      paint:{ 'raster-opacity': theme === 'dark' ? 0.45 : 0.38 }
-    }, TOP);
+    paint:{ 'text-color': labelColor, 'text-halo-color': labelHalo, 'text-halo-width': 2.2 }
   });
 }
 
 function setGroupVisible(key, on) {
   visible[key] = on;
   const v = on ? 'visible' : 'none';
-  ['-casing','-line-l','-stop-c','-stop-t','-stop-r1','-stop-r2','-stop-r3','-stop-r4','-stop-r5'].forEach(suf => {
-    if (map.getLayer(key+suf)) map.setLayoutProperty(key+suf, 'visibility', v);
+  const suf = key === 'ferry' ? ['-stop-s'] : ['-stop-c'];
+  ['-casing','-line-l', ...suf, '-stop-t'].forEach(s => {
+    if (map.getLayer(key+s)) map.setLayoutProperty(key+s, 'visibility', v);
   });
 }
 
 map.on('style.load', addLayers);
 
-// ---- UI ----
 const toggles = document.getElementById('toggles');
 for (const g of GROUPS) {
   const row = document.createElement('label'); row.className='row';
@@ -242,7 +269,7 @@ document.getElementById('theme').addEventListener('click', e => {
   theme = b.dataset.style;
   document.querySelectorAll('#theme button').forEach(x => x.classList.toggle('active', x===b));
   document.body.classList.toggle('dark', theme==='dark');
-  map.setStyle(STYLES[theme]);   // style.load re-adds layers
+  map.setStyle(STYLES[theme]);
 });
 </script>
 </body>
