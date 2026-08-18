@@ -2,9 +2,6 @@
 (function () {
   const Game = () => window.JetLagCitibikeGame;
   const Geo = () => window.JetLagGeo;
-  const TF_KEY = (window.THUNDERFOREST_KEY && window.THUNDERFOREST_KEY.indexOf('YOUR_') !== 0)
-    ? window.THUNDERFOREST_KEY
-    : 'f0288cb73dd840f5a6aca1cce00d7357';
 
   let map = null;
   let theme = 'light';
@@ -26,6 +23,14 @@
   const STATION_DOT_RADIUS = ['interpolate', ['linear'], ['zoom'], 9, 1.5, 12, 2.5, 14, 4];
   const STATION_DOT_STROKE = 0.9;
   const EMPTY = { type: 'FeatureCollection', features: [] };
+  const COMMUTER_RAIL_COLOR = '#5c4a9a';
+  const TRANSIT_LAYER_IDS = [
+    'mb-commuter-rail',
+    'mb-light-rail',
+    'cb-airtrain-line',
+    'cb-subway-casing',
+    'cb-subway-line',
+  ];
 
   function elimStyle() {
     if (theme === 'dark') {
@@ -98,6 +103,7 @@
       map.setConfigProperty('basemap', 'showAdminBoundaries', false);
     } catch (_) { /* classic styles */ }
     hideAdminLineLayers();
+    hideBasemapRailLayers();
     if (map.getPitch() !== 0) map.setPitch(0);
   }
 
@@ -110,6 +116,25 @@
       if (layer.type === 'line' && (id.includes('admin') || id.includes('boundary') || id.includes('border'))) {
         try { map.setLayoutProperty(layer.id, 'visibility', 'none'); } catch (_) { /* imported */ }
       }
+    }
+  }
+
+  function hideBasemapRailLayers() {
+    if (!map?.getStyle?.()) return;
+    const layers = map.getStyle().layers || [];
+    for (const layer of layers) {
+      if (layer.id.startsWith('cb-') || layer.id.startsWith('mb-')) continue;
+      const id = layer.id.toLowerCase();
+      if (id.includes('road-rail') || id.includes('rail-tracks')) {
+        try { map.setLayoutProperty(layer.id, 'visibility', 'none'); } catch (_) { /* imported */ }
+      }
+    }
+  }
+
+  function setTransitVisibility() {
+    const vis = showTransit ? 'visible' : 'none';
+    for (const id of TRANSIT_LAYER_IDS) {
+      if (map?.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
     }
   }
 
@@ -384,9 +409,11 @@
     set('cb-questions-airport-edge', 'line-opacity', theme === 'dark' ? 0.95 : 0.88);
     set('cb-questions-radius-line', 'line-width', theme === 'dark' ? 2.8 : 2.4);
     set('cb-questions-radius-line', 'line-opacity', theme === 'dark' ? 0.95 : 0.9);
-    if (map.getLayer('tf-transport')) {
-      map.setPaintProperty('tf-transport', 'raster-opacity', theme === 'dark' ? 0.28 : 0.3);
-    }
+    const transitOpacity = theme === 'dark' ? 0.92 : 0.88;
+    set('mb-commuter-rail', 'line-opacity', transitOpacity);
+    set('mb-light-rail', 'line-opacity', transitOpacity);
+    set('cb-airtrain-line', 'line-opacity', transitOpacity);
+    set('cb-subway-line', 'line-opacity', 1);
   }
 
   function addLayer(layer) {
@@ -397,18 +424,117 @@
   function addParkLayers() { /* Mapbox Standard already styles parks */ }
 
   function addTransitLayer() {
-    if (map.getSource('tf-transport')) return;
-    map.addSource('tf-transport', {
-      type: 'raster',
-      tiles: [`https://tile.thunderforest.com/transport/{z}/{x}/{y}.png?apikey=${TF_KEY}`],
-      tileSize: 256,
-      attribution: '© Thunderforest, © OSM',
-    });
-    addLayer({
-      id: 'tf-transport', type: 'raster', source: 'tf-transport', slot: 'top',
-      layout: { visibility: showTransit ? 'visible' : 'none' },
-      paint: { 'raster-opacity': theme === 'dark' ? 0.28 : 0.3 },
-    });
+    const vis = showTransit ? 'visible' : 'none';
+    const casing = theme === 'dark' ? '#0b0e13' : '#ffffff';
+    const opacity = theme === 'dark' ? 0.92 : 0.88;
+    const width = ['interpolate', ['linear'], ['zoom'], 9, 1.2, 12, 2.1, 15, 3.2];
+
+    if (!map.getSource('mb-streets')) {
+      map.addSource('mb-streets', { type: 'vector', url: 'mapbox://mapbox.mapbox-streets-v8' });
+    }
+    if (!map.getSource('cb-subway-lines')) {
+      map.addSource('cb-subway-lines', { type: 'geojson', data: 'data/subway_lines.geojson' });
+    }
+    if (!map.getSource('cb-airtrain-lines')) {
+      map.addSource('cb-airtrain-lines', { type: 'geojson', data: 'data/airtrain_lines.geojson' });
+    }
+
+    if (!map.getLayer('mb-commuter-rail')) {
+      addLayer({
+        id: 'mb-commuter-rail',
+        type: 'line',
+        source: 'mb-streets',
+        'source-layer': 'road',
+        minzoom: 8,
+        filter: [
+          'all',
+          ['==', ['get', 'class'], 'major_rail'],
+          ['==', ['get', 'type'], 'rail'],
+        ],
+        layout: {
+          visibility: vis,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': COMMUTER_RAIL_COLOR,
+          'line-width': width,
+          'line-opacity': opacity,
+        },
+      });
+    }
+    if (!map.getLayer('mb-light-rail')) {
+      addLayer({
+        id: 'mb-light-rail',
+        type: 'line',
+        source: 'mb-streets',
+        'source-layer': 'road',
+        minzoom: 8,
+        filter: ['in', ['get', 'type'], ['literal', ['light_rail', 'tram']]],
+        layout: {
+          visibility: vis,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ['coalesce', ['get', 'color'], '#F5A400'],
+          'line-width': width,
+          'line-opacity': opacity,
+        },
+      });
+    }
+    if (!map.getLayer('cb-airtrain-line')) {
+      addLayer({
+        id: 'cb-airtrain-line',
+        type: 'line',
+        source: 'cb-airtrain-lines',
+        minzoom: 8,
+        layout: {
+          visibility: vis,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ['coalesce', ['get', 'color'], '#00857C'],
+          'line-width': width,
+          'line-opacity': opacity,
+        },
+      });
+    }
+    if (!map.getLayer('cb-subway-line')) {
+      addLayer({
+        id: 'cb-subway-casing',
+        type: 'line',
+        source: 'cb-subway-lines',
+        minzoom: 8,
+        layout: {
+          visibility: vis,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': casing,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.4, 15, 5],
+          'line-opacity': theme === 'dark' ? 0.55 : 0.7,
+        },
+      });
+      addLayer({
+        id: 'cb-subway-line',
+        type: 'line',
+        source: 'cb-subway-lines',
+        minzoom: 8,
+        layout: {
+          visibility: vis,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': width,
+          'line-opacity': 1,
+        },
+      });
+    }
   }
 
   function addMapLayers() {
@@ -419,7 +545,6 @@
     const zones = zoneStyle();
 
     addParkLayers();
-    addTransitLayer();
 
     if (!map.getSource('cb-stations')) {
       map.addSource('cb-stations', { type: 'geojson', data: stationFeaturesGeoJSON() });
@@ -540,6 +665,8 @@
         },
       });
     }
+    addTransitLayer();
+    hideBasemapRailLayers();
     if (!map.getLayer('cb-questions-thermo')) {
       addLayer({
         id: 'cb-questions-thermo-link', type: 'line', source: 'cb-questions',
@@ -745,9 +872,7 @@
 
     document.getElementById('cb-toggle-transit')?.addEventListener('change', e => {
       showTransit = e.target.checked;
-      if (map?.getLayer('tf-transport')) {
-        map.setLayoutProperty('tf-transport', 'visibility', showTransit ? 'visible' : 'none');
-      }
+      setTransitVisibility();
     });
 
     document.getElementById('cb-live-endgame')?.addEventListener('change', e => {
