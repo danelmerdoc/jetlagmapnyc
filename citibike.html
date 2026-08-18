@@ -83,6 +83,8 @@
     display:flex; align-items:center; gap:8px; padding:6px 2px; cursor:pointer; user-select:none;
     font-weight:700; font-size:14px;
   }
+  .cb-item-chev { display:flex; width:18px; height:18px; opacity:.75; flex:0 0 auto; }
+  .cb-item-chev svg { width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
   .cb-item.collapsed .cb-item-body { display:none; }
   .cb-item-body { padding:0 0 8px; }
   .q-type {
@@ -95,9 +97,15 @@
   .loc-coords { font-size:12px; font-weight:600; text-align:right; line-height:1.35; opacity:.95; }
   .loc-actions { display:flex; gap:6px; margin-top:10px; }
   .loc-actions button, .q-foot button {
+    display:inline-flex; align-items:center; justify-content:center;
     width:36px; height:36px; border:none; border-radius:8px; background:#111827; color:#fff;
-    cursor:pointer; font-size:15px;
+    cursor:pointer;
   }
+  .loc-actions button svg, .q-foot button svg {
+    width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:2;
+    stroke-linecap:round; stroke-linejoin:round;
+  }
+  .q-foot button:disabled { opacity:.35; cursor:not-allowed; }
   .loc-edit { margin-top:8px; }
   .result-row { display:flex; align-items:center; gap:8px; margin:10px 0 6px; flex-wrap:wrap; }
   .result-row > span { font-weight:800; font-size:14px; margin-right:4px; }
@@ -121,6 +129,9 @@
     font-size:11px; font-weight:700; background:#fff; border:2px solid currentColor; border-radius:999px;
     padding:2px 7px; box-shadow:0 2px 8px rgba(0,0,0,.2);
   }
+  .map-pin { cursor:grab; line-height:0; }
+  .map-pin:active { cursor:grabbing; }
+  .map-pin svg { display:block; filter:drop-shadow(0 2px 5px rgba(0,0,0,.35)); }
   @media (max-width: 768px) {
     .map-switch { top:auto; bottom:12px; left:50%; right:auto; transform:translateX(-50%); }
     .panel { top:8px; left:8px; right:8px; width:auto; max-height:calc(100dvh - 72px); }
@@ -152,9 +163,9 @@
       <button type="button" data-style="dark">Dark</button>
     </div>
     <label class="row"><input type="checkbox" id="cb-toggle-transit" /> Subtle transit layer</label>
-    <label class="row"><input type="checkbox" id="cb-toggle-3d" checked /> 3D buildings</label>
+    <label class="row"><input type="checkbox" id="cb-toggle-3d" /> 3D buildings</label>
     <label class="row"><input type="checkbox" id="cb-live-endgame" /> Live location (endgame)</label>
-    <p class="game-hint">3D buildings are on by default — zoom in and tilt the map. Endgame tracking shows whether you are inside the selected hide zone.</p>
+    <p class="game-hint">Toggle 3D buildings and zoom in to tilt the map. Endgame tracking shows whether you are inside the selected hide zone.</p>
 
     <div class="section">Hide zones</div>
     <label>Hide radius</label>

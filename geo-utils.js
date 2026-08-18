@@ -57,22 +57,38 @@ window.JetLagGeo = (function () {
     return turf.circle([lng, lat], radius, { steps: 96, units: unit });
   }
 
-  /** Half-plane containing point B when warmer=true (closer to B than A). */
+  /** Half-plane on the warmer (B) or colder (A) side of the perpendicular bisector. */
   function thermometerRegion(q, warmer) {
     const a = turf.point([q.lngA, q.latA]);
     const b = turf.point([q.lngB, q.latB]);
     const mid = turf.midpoint(a, b);
-    const bearing = turf.bearing(a, b);
-    const toward = warmer ? bearing : bearing + 180;
-    const left = turf.destination(mid, 250, toward + 90, { units: 'kilometers' });
-    const right = turf.destination(mid, 250, toward - 90, { units: 'kilometers' });
-    const tip = turf.destination(mid, 250, toward, { units: 'kilometers' });
+    const abBearing = turf.bearing(a, b);
+    const alongBisector = abBearing + 90;
+    const side = warmer ? abBearing : abBearing + 180;
+    const R = 400;
+    const pLeft = turf.destination(mid, R, alongBisector, { units: 'kilometers' });
+    const pRight = turf.destination(mid, R, alongBisector + 180, { units: 'kilometers' });
+    const pFarLeft = turf.destination(pLeft, R, side, { units: 'kilometers' });
+    const pFarRight = turf.destination(pRight, R, side, { units: 'kilometers' });
     return turf.polygon([[
-      left.geometry.coordinates,
-      right.geometry.coordinates,
-      tip.geometry.coordinates,
-      left.geometry.coordinates,
+      pLeft.geometry.coordinates,
+      pRight.geometry.coordinates,
+      pFarRight.geometry.coordinates,
+      pFarLeft.geometry.coordinates,
+      pLeft.geometry.coordinates,
     ]]);
+  }
+
+  /** Long segment through the midpoint, perpendicular to A–B. */
+  function thermometerBisectorLine(q, lengthKm) {
+    const a = turf.point([q.lngA, q.latA]);
+    const b = turf.point([q.lngB, q.latB]);
+    const mid = turf.midpoint(a, b);
+    const perp = turf.bearing(a, b) + 90;
+    const len = lengthKm || 80;
+    const p1 = turf.destination(mid, len, perp, { units: 'kilometers' });
+    const p2 = turf.destination(mid, len, perp + 180, { units: 'kilometers' });
+    return turf.lineString([p1.geometry.coordinates, p2.geometry.coordinates]);
   }
 
   /** Voronoi cell for nearest of points[] containing target point. */
@@ -105,6 +121,6 @@ window.JetLagGeo = (function () {
 
   return {
     WORLD, intersect, holedMask, modifyMapData, geodesicCircle,
-    thermometerRegion, voronoiCellContaining, unionMany, safePoly,
+    thermometerRegion, thermometerBisectorLine, voronoiCellContaining, unionMany, safePoly,
   };
 })();

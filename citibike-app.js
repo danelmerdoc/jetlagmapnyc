@@ -10,7 +10,7 @@
   let theme = 'light';
   let zoneMode = 'overlap';
   let showTransit = false;
-  let show3D = true;
+  let show3D = false;
   let focusStation = null;
   let clickBound = false;
   let layersReady = false;
@@ -23,12 +23,24 @@
 
   const STYLE = 'mapbox://styles/mapbox/standard';
 
+  function elimStyle() {
+    if (theme === 'dark') {
+      return { fill: '#c09a50', fillOpacity: 0.38, border: '#d4af37', borderWidth: 2.6 };
+    }
+    return { fill: '#3b82f6', fillOpacity: 0.32, border: '#2563eb', borderWidth: 2.4 };
+  }
+
   function applyBasemap() {
     if (!map) return;
     try {
       map.setConfigProperty('basemap', 'lightPreset', theme === 'dark' ? 'night' : 'day');
       map.setConfigProperty('basemap', 'show3dObjects', !!show3D);
+      map.setConfigProperty('basemap', 'show3dBuildings', !!show3D);
+      map.setConfigProperty('basemap', 'show3dLandmarks', !!show3D);
+      map.setConfigProperty('basemap', 'show3dTrees', !!show3D);
+      map.setConfigProperty('basemap', 'show3dFacades', !!show3D);
     } catch (_) { /* classic styles */ }
+    if (!show3D && map.getPitch() !== 0) map.setPitch(0);
   }
 
   function setStatus(text) {
@@ -92,13 +104,17 @@
     });
     const elimVis = !focusStation && Game().getQuestions().some(q => q.answer != null) ? 'visible' : 'none';
     if (map.getLayer('cb-elim-fill')) map.setLayoutProperty('cb-elim-fill', 'visibility', elimVis);
+    if (map.getLayer('cb-possible-border')) map.setLayoutProperty('cb-possible-border', 'visibility', elimVis);
   }
 
-  function markerEl(label, color) {
+  function pinEl(color) {
     const el = document.createElement('div');
-    el.className = 'marker-label';
-    el.style.color = color;
-    el.textContent = label;
+    el.className = 'map-pin';
+    el.innerHTML = `<svg viewBox="0 0 24 36" width="26" height="39" aria-hidden="true">
+      <path fill="${color}" stroke="rgba(255,255,255,.85)" stroke-width="1.2"
+        d="M12 1C7.03 1 3 5.03 3 10c0 7.25 9 24 9 24s9-16.75 9-24c0-4.97-4.03-9-9-9z"/>
+      <circle cx="12" cy="10" r="3.2" fill="#fff"/>
+    </svg>`;
     return el;
   }
 
@@ -112,8 +128,7 @@
     clearMarkers();
     for (const q of Game().getQuestions()) {
       if ((q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') && q.lat != null) {
-        const label = q.type === 'radius' ? 'Radius' : q.type === 'coastline' ? 'Coast' : 'You';
-        const m = new mapboxgl.Marker({ element: markerEl(label, q.color), draggable: true })
+        const m = new mapboxgl.Marker({ element: pinEl(q.color), draggable: true, anchor: 'bottom' })
           .setLngLat([q.lng, q.lat])
           .addTo(map);
         m.on('dragend', () => {
@@ -124,7 +139,7 @@
       }
       if (q.type === 'thermometer') {
         if (q.latA != null) {
-          const m = new mapboxgl.Marker({ element: markerEl('Start', q.color), draggable: true })
+          const m = new mapboxgl.Marker({ element: pinEl(q.colorA || q.color), draggable: true, anchor: 'bottom' })
             .setLngLat([q.lngA, q.latA])
             .addTo(map);
           m.on('dragend', () => {
@@ -134,7 +149,7 @@
           markers.push(m);
         }
         if (q.latB != null) {
-          const m = new mapboxgl.Marker({ element: markerEl('End', q.color), draggable: true })
+          const m = new mapboxgl.Marker({ element: pinEl(q.colorB || '#2563eb'), draggable: true, anchor: 'bottom' })
             .setLngLat([q.lngB, q.latB])
             .addTo(map);
           m.on('dragend', () => {
@@ -155,6 +170,11 @@
     if (map.getSource('cb-focus-outside')) map.getSource('cb-focus-outside').setData(focusOutsideMask());
     if (map.getSource('cb-elim')) {
       map.getSource('cb-elim').setData(focusStation ? { type: 'FeatureCollection', features: [] } : Game().eliminatedMask());
+    }
+    if (map.getSource('cb-possible')) {
+      map.getSource('cb-possible').setData(
+        focusStation ? { type: 'FeatureCollection', features: [] } : Game().possibleAreaGeoJSON(),
+      );
     }
     syncZoneVisibility();
     scheduleMergedUpdate();
@@ -216,6 +236,37 @@
     lastTap = { t: now, lng: lngLat.lng, lat: lngLat.lat };
   }
 
+  function updateThemePaint() {
+    if (!map || !layersReady) return;
+    const casing = theme === 'dark' ? '#0b0e13' : '#ffffff';
+    const elim = elimStyle();
+    const stationFill = theme === 'dark' ? '#8ec5ff' : '#003DA5';
+    const zoneStroke = theme === 'dark' ? '#ffc04d' : '#e69500';
+    const zoneFill = theme === 'dark' ? '#ffb020' : '#ffb020';
+    const set = (id, prop, val) => { if (map.getLayer(id)) map.setPaintProperty(id, prop, val); };
+    set('cb-elim-fill', 'fill-color', elim.fill);
+    set('cb-elim-fill', 'fill-opacity', elim.fillOpacity);
+    set('cb-possible-border', 'line-color', elim.border);
+    set('cb-possible-border', 'line-width', elim.borderWidth);
+    set('cb-focus-outside-fill', 'fill-color', elim.fill);
+    set('cb-focus-outside-fill', 'fill-opacity', elim.fillOpacity + 0.08);
+    set('cb-zones-overlap', 'circle-color', zoneFill);
+    set('cb-zones-overlap', 'circle-stroke-color', zoneStroke);
+    set('cb-merged-fill', 'fill-color', zoneFill);
+    set('cb-merged-line', 'line-color', zoneStroke);
+    set('cb-focus-fill', 'fill-color', zoneFill);
+    set('cb-focus-line', 'line-color', zoneStroke);
+    set('cb-stations-active', 'circle-color', stationFill);
+    set('cb-stations-active', 'circle-stroke-color', casing);
+    set('cb-questions-airports', 'circle-stroke-color', casing);
+    set('cb-questions-thermo', 'line-opacity', theme === 'dark' ? 0.95 : 0.88);
+    set('cb-questions-radius-line', 'line-width', theme === 'dark' ? 2.8 : 2.4);
+    set('cb-questions-radius-line', 'line-opacity', theme === 'dark' ? 0.95 : 0.9);
+    if (map.getLayer('tf-transport')) {
+      map.setPaintProperty('tf-transport', 'raster-opacity', theme === 'dark' ? 0.28 : 0.3);
+    }
+  }
+
   function addLayer(layer) {
     if (!layer.slot) layer.slot = 'top';
     if (!map.getLayer(layer.id)) map.addLayer(layer);
@@ -246,7 +297,7 @@
     layersReady = false;
     clickBound = false;
     const casing = theme === 'dark' ? '#0b0e13' : '#ffffff';
-    const elimColor = theme === 'dark' ? '#0f172a' : '#1e293b';
+    const elim = elimStyle();
 
     addParkLayers();
     addTransitLayer();
@@ -269,12 +320,26 @@
     if (!map.getSource('cb-elim')) {
       map.addSource('cb-elim', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     }
+    if (!map.getSource('cb-possible')) {
+      map.addSource('cb-possible', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    }
 
     if (!map.getLayer('cb-elim-fill')) {
       addLayer({
         id: 'cb-elim-fill', type: 'fill', source: 'cb-elim',
         layout: { visibility: 'none' },
-        paint: { 'fill-color': elimColor, 'fill-opacity': theme === 'dark' ? 0.5 : 0.42 },
+        paint: { 'fill-color': elim.fill, 'fill-opacity': elim.fillOpacity },
+      });
+    }
+    if (!map.getLayer('cb-possible-border')) {
+      addLayer({
+        id: 'cb-possible-border', type: 'line', source: 'cb-possible',
+        layout: { visibility: 'none' },
+        paint: {
+          'line-color': elim.border,
+          'line-width': elim.borderWidth,
+          'line-opacity': 0.95,
+        },
       });
     }
     if (!map.getLayer('cb-zones-overlap')) {
@@ -305,7 +370,7 @@
       addLayer({
         id: 'cb-focus-outside-fill', type: 'fill', source: 'cb-focus-outside',
         layout: { visibility: 'none' },
-        paint: { 'fill-color': elimColor, 'fill-opacity': 0.52 },
+        paint: { 'fill-color': elim.fill, 'fill-opacity': elim.fillOpacity + 0.08 },
       });
       addLayer({
         id: 'cb-focus-fill', type: 'fill', source: 'cb-focus',
@@ -321,13 +386,21 @@
     if (!map.getLayer('cb-questions-thermo')) {
       addLayer({
         id: 'cb-questions-thermo', type: 'line', source: 'cb-questions',
-        filter: ['==', ['get', 'kind'], 'thermo-line'],
-        paint: { 'line-color': ['get', 'color'], 'line-width': 3 },
+        filter: ['==', ['get', 'kind'], 'thermo-bisector'],
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': 2.8,
+          'line-opacity': theme === 'dark' ? 0.95 : 0.88,
+        },
       });
       addLayer({
         id: 'cb-questions-radius-line', type: 'line', source: 'cb-questions',
         filter: ['==', ['get', 'kind'], 'radius-line'],
-        paint: { 'line-color': ['get', 'color'], 'line-width': 2.4, 'line-dasharray': [1.2, 0.8] },
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': theme === 'dark' ? 2.8 : 2.4,
+          'line-opacity': theme === 'dark' ? 0.95 : 0.9,
+        },
       });
       addLayer({
         id: 'cb-questions-airports', type: 'circle', source: 'cb-questions',
@@ -379,6 +452,7 @@
 
     layersReady = true;
     add3DBuildings();
+    updateThemePaint();
     refreshMap();
   }
 
@@ -463,6 +537,7 @@
       document.querySelectorAll('#cb-theme button').forEach(x => x.classList.toggle('active', x === b));
       document.body.classList.toggle('dark', theme === 'dark');
       applyBasemap();
+      updateThemePaint();
     });
 
     document.getElementById('cb-zone-mode')?.addEventListener('click', e => {
@@ -479,6 +554,9 @@
         map.setLayoutProperty('tf-transport', 'visibility', showTransit ? 'visible' : 'none');
       }
     });
+
+    const cb3d = document.getElementById('cb-toggle-3d');
+    if (cb3d) cb3d.checked = show3D;
 
     document.getElementById('cb-toggle-3d')?.addEventListener('change', e => {
       show3D = e.target.checked;
@@ -548,10 +626,20 @@
       style: STYLE,
       center: [-73.98, 40.75],
       zoom: 12.2,
-      pitch: show3D ? 45 : 0,
+      pitch: 0,
+      bearing: 0,
       hash: true,
       attributionControl: true,
       antialias: true,
+      config: {
+        basemap: {
+          show3dObjects: false,
+          show3dBuildings: false,
+          show3dLandmarks: false,
+          show3dTrees: false,
+          show3dFacades: false,
+        },
+      },
     });
     map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), 'top-right');
     map.addControl(new mapboxgl.GeolocateControl({
@@ -565,9 +653,7 @@
     });
     map.once('idle', () => {
       applyBasemap();
-      if (show3D && map.getZoom() < 14) {
-        setStatus('Zoom in past 14 (or toggle 3D) to see buildings');
-      }
+      if (!show3D) map.easeTo({ pitch: 0, bearing: 0, duration: 0 });
     });
     map.on('moveend', () => {
       if (zoneMode === 'merged') scheduleMergedUpdate();
