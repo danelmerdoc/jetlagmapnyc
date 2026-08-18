@@ -23,6 +23,8 @@
   const STYLE = 'mapbox://styles/mapbox/standard';
   /** Mapbox simplifies GeoJSON by default (~0.375px), which shrinks thousands of hide circles. */
   const ZONE_GEOJSON_OPTS = { tolerance: 0 };
+  const STATION_DOT_RADIUS = ['interpolate', ['linear'], ['zoom'], 9, 1.5, 12, 2.5, 14, 4];
+  const STATION_DOT_STROKE = 0.9;
 
   function elimStyle() {
     if (theme === 'dark') {
@@ -34,27 +36,27 @@
   function zoneStyle() {
     if (theme === 'dark') {
       return {
-        fill: '#ffc107',
-        fillOpacity: 0.74,
-        stroke: '#ffeb3b',
-        strokeOpacity: 1,
-        strokeWidth: 4,
-        focusStroke: '#fff59d',
-        focusFillOpacity: 0.8,
-        haloFill: '#ff9100',
-        haloOpacity: 0.48,
-        emissive: 0.92,
+        fill: '#22d3ee',
+        fillOpacity: 0.36,
+        stroke: '#67e8f9',
+        strokeOpacity: 0.92,
+        strokeWidth: 2.6,
+        focusStroke: '#a5f3fc',
+        focusFillOpacity: 0.44,
+        haloFill: '#06b6d4',
+        haloOpacity: 0.18,
+        emissive: 0.45,
       };
     }
     return {
-      fill: '#ffb020',
-      fillOpacity: 0.22,
-      stroke: '#e69500',
-      strokeOpacity: 0.75,
+      fill: '#22d3ee',
+      fillOpacity: 0.2,
+      stroke: '#0891b2',
+      strokeOpacity: 0.85,
       strokeWidth: 2,
-      focusStroke: '#ffb020',
-      focusFillOpacity: 0.28,
-      haloFill: '#ffb020',
+      focusStroke: '#06b6d4',
+      focusFillOpacity: 0.26,
+      haloFill: '#22d3ee',
       haloOpacity: 0,
       emissive: 0,
     };
@@ -346,8 +348,10 @@
     set('cb-focus-outside-fill', 'fill-color', elim.fill);
     set('cb-focus-outside-fill', 'fill-opacity', elim.fillOpacity + 0.08);
     applyZonePaint(zones);
+    set('cb-stations-active', 'circle-radius', STATION_DOT_RADIUS);
     set('cb-stations-active', 'circle-color', stationFill);
     set('cb-stations-active', 'circle-stroke-color', casing);
+    set('cb-stations-active', 'circle-stroke-width', STATION_DOT_STROKE);
     set('cb-questions-airports', 'circle-stroke-color', casing);
     set('cb-questions-thermo', 'line-opacity', theme === 'dark' ? 0.95 : 0.88);
     set('cb-questions-radius-line', 'line-width', theme === 'dark' ? 2.8 : 2.4);
@@ -539,10 +543,10 @@
       addLayer({
         id: 'cb-stations-active', type: 'circle', source: 'cb-stations',
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 3, 14, 7],
+          'circle-radius': STATION_DOT_RADIUS,
           'circle-color': '#003DA5',
           'circle-stroke-color': casing,
-          'circle-stroke-width': 1.2,
+          'circle-stroke-width': STATION_DOT_STROKE,
         },
       });
     }
