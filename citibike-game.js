@@ -259,14 +259,17 @@
     }
     if (jerseyPoly) return jerseyPoly;
     const njBox = turf.bboxPolygon(NJ_BOX);
-    const polys = Object.values(boroughPolys);
-    if (!polys.length) return njBox;
+    const lands = BOROUGHS.filter(b => b !== 'Jersey').map(b => boroughLand(b)).filter(Boolean);
+    if (!lands.length) return njBox;
     try {
-      // Coarse outlines keep the union cheap; the mask is only a visual guide.
-      const coarse = polys.map(p => {
+      const coarse = lands.map(p => {
         try { return turf.simplify(p, { tolerance: 0.001, highQuality: false }); } catch (_) { return p; }
       });
-      jerseyPoly = turf.difference(turf.featureCollection([njBox, Geo().unionMany(coarse)])) || njBox;
+      let nyc = Geo().unionMany(coarse);
+      // Pull NYC's shore out by more than the max hide radius so the Hudson and
+      // East River are not counted as Jersey. Hiders cannot be in the water.
+      try { nyc = turf.buffer(nyc, 0.6, { units: 'miles', steps: 8 }); } catch (_) { /* keep unpadded */ }
+      jerseyPoly = turf.difference(turf.featureCollection([njBox, nyc])) || njBox;
     } catch (_) {
       jerseyPoly = njBox;
     }
@@ -277,17 +280,40 @@
     if (boroughIndexCache[name] !== undefined) return boroughIndexCache[name];
     let rings;
     if (name === 'Jersey') {
-      // Jersey's edge is the NJ box plus every borough outline, so skip the union.
-      rings = [NJ_BOX_RING];
-      for (const boro of Object.keys(boroughPolys)) {
-        rings = rings.concat(simplifiedRings(boroughLand(boro), 0.00005));
-      }
+      rings = simplifiedRings(boroughPoly('Jersey'), 0.00005);
     } else {
       rings = simplifiedRings(boroughLand(name), 0.00005);
     }
     const index = rings.length ? Geo().buildSegmentIndex(rings, 0.02) : null;
     boroughIndexCache[name] = index;
     return index;
+  }
+
+  /**
+   * Boroughs a hider at this station could actually be in. Water does not count:
+   * the hide circle has to overlap another borough's land, not just the Hudson.
+   */
+  function possibleBoroughs(st) {
+    const h = hideRadiusMi + 1e-9;
+    const out = [];
+    for (const name of BOROUGHS) {
+      if (st.borough === name) {
+        out.push(name);
+        continue;
+      }
+      const edges = boroughEdgeDistances(name);
+      if (edges && edges[st.idx] <= h) out.push(name);
+    }
+    return out;
+  }
+
+  const otherLandCache = {};
+
+  function landExcept(name) {
+    if (otherLandCache[name] !== undefined) return otherLandCache[name];
+    const parts = BOROUGHS.filter(b => b !== name).map(b => boroughPoly(b)).filter(Boolean);
+    otherLandCache[name] = parts.length ? Geo().unionMany(parts) : null;
+    return otherLandCache[name];
   }
 
   /**
@@ -384,12 +410,9 @@
     }
 
     if (q.type === 'borough') {
-      const edges = boroughEdgeDistances(q.borough);
-      if (!edges) return true;
-      const inside = st.borough === q.borough;
-      const edge = edges[st.idx];
-      if (q.answer === 'same') return inside || edge <= h + eps;
-      return !inside || edge < h - eps;
+      const possible = possibleBoroughs(st);
+      if (q.answer === 'same') return possible.includes(q.borough);
+      return possible.some(b => b !== q.borough);
     }
 
     if (q.type === 'airport') {
@@ -564,8 +587,13 @@
       } else if (q.type === 'thermometer' && q.latA != null && q.latB != null) {
         area = Geo().modifyMapData(area, Geo().thermometerRegion(q, q.answer === 'warmer'), true);
       } else if (q.type === 'borough') {
-        const poly = boroughPoly(q.borough);
-        if (poly) area = Geo().modifyMapData(area, poly, q.answer === 'same');
+        if (q.answer === 'same') {
+          const poly = boroughPoly(q.borough);
+          if (poly) area = Geo().modifyMapData(area, poly, true);
+        } else {
+          const other = landExcept(q.borough);
+          if (other) area = Geo().modifyMapData(area, other, true);
+        }
       } else if (q.type === 'airport' && q.lat != null) {
         const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, AIRPORTS);
         if (cell) area = Geo().modifyMapData(area, cell, q.answer === 'same');
@@ -1029,11 +1057,12 @@
 
     // Bounding boxes let most stations skip the polygon test, and a light simplify
     // makes the remaining tests ~6x cheaper without changing any assignment.
-    const boroBoxes = Object.entries(boroughPolys).map(([name, poly]) => {
+    const boroBoxes = BOROUGHS.filter(n => n !== 'Jersey').map(name => {
+      const poly = boroughLand(name);
       let hit = poly;
       try { hit = turf.simplify(poly, { tolerance: 0.0002, highQuality: false }); } catch (_) { hit = poly; }
-      return { name, poly: hit, box: turf.bbox(poly) };
-    });
+      return { name, poly: hit, box: poly ? turf.bbox(poly) : [0, 0, 0, 0] };
+    }).filter(b => b.poly);
 
     stations = (geojson.features || []).map((f, i) => {
       const [lng, lat] = f.geometry.coordinates;
