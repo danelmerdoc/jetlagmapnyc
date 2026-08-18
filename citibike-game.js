@@ -244,6 +244,7 @@
   const boroughIndexCache = {};
   const boroughEdgeCache = {};
   let jerseyPoly = null;
+  let playableWaterCache = undefined;
 
   function simplifiedRings(poly, tolerance) {
     if (!poly) return [];
@@ -393,6 +394,36 @@
     return otherLandCache[name];
   }
 
+  /**
+   * Water inside the playable outline (Hudson, East River, harbor). Borough
+   * matching greys land only, so these water borders stay in the remaining area.
+   */
+  function playableWater() {
+    if (playableWaterCache !== undefined) return playableWaterCache;
+    const play = playableStart();
+    const lands = BOROUGHS.map(b => boroughPoly(b)).filter(Boolean);
+    if (!play || lands.length < BOROUGHS.length) {
+      playableWaterCache = null;
+      return null;
+    }
+    try {
+      const land = Geo().unionMany(lands);
+      playableWaterCache = land
+        ? (turf.difference(turf.featureCollection([play, land])) || null)
+        : null;
+    } catch (_) {
+      playableWaterCache = null;
+    }
+    return playableWaterCache;
+  }
+
+  function keepPlayableWater(land) {
+    const water = playableWater();
+    if (!land) return water;
+    if (!water) return land;
+    return Geo().unionMany([land, water]) || land;
+  }
+
   const landMassPolyCache = {};
   const landMassIndexCache = {};
   const landMassEdgeCache = {};
@@ -503,6 +534,7 @@
     [boroughLandCache, boroughMaskCache, boroughIndexCache, boroughEdgeCache, otherLandCache]
       .forEach(cache => { for (const k of Object.keys(cache)) delete cache[k]; });
     jerseyPoly = null;
+    playableWaterCache = undefined;
     clearLandMassCaches();
   }
 
@@ -816,10 +848,10 @@
         const boro = seekerBorough(q);
         if (q.answer === 'same') {
           const poly = boro && boroughPoly(boro);
-          if (poly) area = Geo().modifyMapData(area, poly, true);
+          if (poly) area = Geo().modifyMapData(area, keepPlayableWater(poly), true);
         } else if (boro) {
           const other = landExcept(boro);
-          if (other) area = Geo().modifyMapData(area, other, true);
+          if (other) area = Geo().modifyMapData(area, keepPlayableWater(other), true);
         }
       } else if (q.type === 'matching' && q.subtype === 'landmass') {
         const mass = seekerLandMass(q);

@@ -41,7 +41,7 @@
         fillOpacity: 0.36,
         stroke: '#67e8f9',
         strokeOpacity: 0.92,
-        strokeWidth: 2.6,
+        strokeWidth: 1.7,
         focusStroke: '#a5f3fc',
         focusFillOpacity: 0.44,
         haloFill: '#06b6d4',
@@ -54,7 +54,7 @@
       fillOpacity: 0.22,
       stroke: '#e69500',
       strokeOpacity: 0.75,
-      strokeWidth: 2,
+      strokeWidth: 1.35,
       focusStroke: '#ffb020',
       focusFillOpacity: 0.28,
       haloFill: '#ffb020',
@@ -83,7 +83,7 @@
     set('cb-focus-fill', 'fill-opacity', zones.focusFillOpacity);
     set('cb-focus-fill', 'fill-emissive-strength', zones.emissive);
     set('cb-focus-line', 'line-color', zones.focusStroke);
-    set('cb-focus-line', 'line-width', theme === 'dark' ? 4 : 3.2);
+    set('cb-focus-line', 'line-width', theme === 'dark' ? 2.6 : 2.1);
   }
 
   function applyBasemap() {
@@ -536,7 +536,7 @@
         layout: { visibility: 'none' },
         paint: {
           'line-color': zones.focusStroke,
-          'line-width': theme === 'dark' ? 4 : 3.2,
+          'line-width': theme === 'dark' ? 2.6 : 2.1,
         },
       });
     }
