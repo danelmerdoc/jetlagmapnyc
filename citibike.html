@@ -10,8 +10,14 @@
 <script src="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
 <style>
-  :root { --panel: rgba(255,248,236,.97); --text:#2a2418; --border:#e8c878; --accent:#ffb020; --bike:#003DA5; --muted:#7a7264; }
-  body.dark { --panel: rgba(20,24,32,.96); --text:#f5f0e6; --border:#ffb020; --accent:#ffc848; --muted:#c4bba8; }
+  :root {
+    --panel: rgba(252,250,247,.96); --text:#1c1917; --border:#d6d3d1; --accent:#2563eb;
+    --bike:#003DA5; --muted:#78716c; --card:#fff; --btn:#e7e5e4; --result:#d6d3d1;
+  }
+  body.dark {
+    --panel: #12151c; --text:#f4f6fb; --border:#2a3140; --accent:#8b5cf6;
+    --bike:#8b5cf6; --muted:#9aa3b5; --card:#1a1f2b; --btn:#252b38; --result:#2a3140;
+  }
   html,body { margin:0; height:100%; font-family:-apple-system,Helvetica Neue,Helvetica,Arial,sans-serif; touch-action:manipulation; }
   #map { position:absolute; inset:0; }
   .map-switch {
@@ -72,22 +78,37 @@
   .hide-actions, .q-tools { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
   .game-hint { font-size:11px; color:var(--muted); margin:6px 0 0; line-height:1.4; }
   .add-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:8px 0; }
-  .cb-item {
-    border:1px solid var(--border); border-radius:10px; margin:8px 0; background:rgba(255,255,255,.28);
-  }
-  body.dark .cb-item { background:rgba(255,255,255,.04); }
+  .cb-item { margin:10px 0; }
   .cb-item-head {
-    display:flex; align-items:center; gap:6px; padding:8px 8px 8px 10px; cursor:pointer; user-select:none;
+    display:flex; align-items:center; gap:8px; padding:6px 2px; cursor:pointer; user-select:none;
+    font-weight:700; font-size:14px;
   }
   .cb-item.collapsed .cb-item-body { display:none; }
-  .cb-dot { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
-  .cb-item-head strong { font-size:12px; flex:1; }
-  .icon-btn {
-    border:none; background:transparent; color:var(--text); cursor:pointer; font-size:16px;
-    width:28px; height:28px; border-radius:6px; line-height:1;
+  .cb-item-body { padding:0 0 8px; }
+  .q-type {
+    width:100%; background:var(--card); color:var(--text); border:1px solid var(--border);
+    border-radius:10px; padding:10px 12px; font-size:14px; font-weight:600; margin-bottom:8px;
   }
-  .icon-btn:hover { background:rgba(0,0,0,.06); }
-  .cb-item-body { padding:0 10px 10px; font-size:12px; }
+  .loc-card { border-radius:12px; padding:12px; color:#fff; margin:8px 0; }
+  .loc-top { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+  .loc-title { font-size:18px; font-weight:800; }
+  .loc-coords { font-size:12px; font-weight:600; text-align:right; line-height:1.35; opacity:.95; }
+  .loc-actions { display:flex; gap:6px; margin-top:10px; }
+  .loc-actions button, .q-foot button {
+    width:36px; height:36px; border:none; border-radius:8px; background:#111827; color:#fff;
+    cursor:pointer; font-size:15px;
+  }
+  .loc-edit { margin-top:8px; }
+  .result-row { display:flex; align-items:center; gap:8px; margin:10px 0 6px; flex-wrap:wrap; }
+  .result-row > span { font-weight:800; font-size:14px; margin-right:4px; }
+  .result-row button {
+    flex:1; min-width:110px; padding:10px 8px; border:none; border-radius:10px;
+    background:var(--btn); color:var(--text); font-weight:700; font-size:13px; cursor:pointer;
+  }
+  .result-row button.active { outline:2px solid var(--accent); }
+  body.dark .result-row button.active { background:#3d4b63; }
+  .q-foot { display:flex; gap:6px; margin-top:8px; }
+  .icon-btn { border:none; background:transparent; color:var(--text); cursor:pointer; font-size:16px; width:28px; height:28px; }
   .live-banner {
     display:none; position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:3;
     background:var(--panel); border:2px solid var(--border); border-radius:999px; padding:8px 14px;
@@ -131,9 +152,9 @@
       <button type="button" data-style="dark">Dark</button>
     </div>
     <label class="row"><input type="checkbox" id="cb-toggle-transit" /> Subtle transit layer</label>
-    <label class="row"><input type="checkbox" id="cb-toggle-3d" /> 3D buildings (zoom in)</label>
+    <label class="row"><input type="checkbox" id="cb-toggle-3d" checked /> 3D buildings</label>
     <label class="row"><input type="checkbox" id="cb-live-endgame" /> Live location (endgame)</label>
-    <p class="game-hint">3D buildings come with the free Mapbox streets tiles — zoom past 14 and tilt the map. Endgame tracking shows whether you are inside the selected hide zone.</p>
+    <p class="game-hint">3D buildings are on by default — zoom in and tilt the map. Endgame tracking shows whether you are inside the selected hide zone.</p>
 
     <div class="section">Hide zones</div>
     <label>Hide radius</label>
@@ -170,6 +191,7 @@
       <button type="button" class="game-btn secondary" id="cb-add-thermo">+ Thermo</button>
       <button type="button" class="game-btn secondary" id="cb-add-borough">+ Borough</button>
       <button type="button" class="game-btn secondary" id="cb-add-airport">+ Airport</button>
+      <button type="button" class="game-btn secondary" id="cb-add-coast" style="grid-column:1 / -1">+ Coastline</button>
     </div>
     <div id="cb-game-list"></div>
     <button type="button" class="game-btn secondary" id="cb-clear-all">Clear all questions</button>

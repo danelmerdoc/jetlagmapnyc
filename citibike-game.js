@@ -1,8 +1,8 @@
 /** Citi Bike hide-and-seek — station elimination + question logic. */
 (function () {
   const Geo = () => window.JetLagGeo;
-  const COLORS = ['#ffb020', '#4da3ff', '#6bcb77', '#ff6b9d', '#c084fc', '#f97316', '#14b8a6'];
-  const STORAGE_KEY = 'jetlagCitibikeQuestionsV2';
+  const COLORS = ['#7c4dff', '#2563eb', '#0d9488', '#db2777', '#ea580c', '#4f46e5'];
+  const STORAGE_KEY = 'jetlagCitibikeQuestionsV3';
   const BOROUGHS = ['Manhattan', 'Bronx', 'Brooklyn', 'Queens', 'Staten Island', 'Jersey'];
   const AIRPORTS = [
     { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7348, lng: -73.9726 },
@@ -15,6 +15,7 @@
   let hideRadiusMi = 0.2;
   let stations = [];
   let boroughPolys = {};
+  let coastFeature = null;
   let onChange = null;
 
   function nextColor() {
@@ -61,6 +62,30 @@
 
   function fmtCoord(lat, lng) {
     return `${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`;
+  }
+
+  function fmtPretty(lat, lng) {
+    if (lat == null || lng == null) return 'Tap locate\nor paste';
+    const ns = lat >= 0 ? 'N' : 'S';
+    const ew = lng >= 0 ? 'E' : 'W';
+    return `${Math.abs(lat).toFixed(5)}° ${ns}\n${Math.abs(lng).toFixed(5)}° ${ew}`;
+  }
+
+  function distToCoast(lat, lng) {
+    if (!coastFeature) return Infinity;
+    const pt = turf.point([lng, lat]);
+    const g = coastFeature.geometry;
+    if (g.type === 'LineString') {
+      return turf.pointToLineDistance(pt, coastFeature, { units: 'miles' });
+    }
+    let best = Infinity;
+    for (const coords of g.coordinates || []) {
+      try {
+        const d = turf.pointToLineDistance(pt, turf.lineString(coords), { units: 'miles' });
+        if (d < best) best = d;
+      } catch (_) { /* skip */ }
+    }
+    return best;
   }
 
   function stationCircle(st) {
@@ -167,6 +192,13 @@
       if (q.answer === 'same') return possible.includes(seeker.id);
       return possible.some(id => id !== seeker.id);
     }
+    if (q.type === 'coastline') {
+      if (q.lat == null) return true;
+      const measure = distToCoast(q.lat, q.lng);
+      const d = st.coastMi != null ? st.coastMi : distToCoast(st.lat, st.lng);
+      if (q.answer === 'closer') return d - hideRadiusMi <= measure + 1e-9;
+      return d + hideRadiusMi >= measure - 1e-9;
+    }
     return true;
   }
 
@@ -191,30 +223,34 @@
     }));
   }
 
-  function mergedZonesGeoJSON(activeStations) {
+  function mergedZonesGeoJSON(activeStations, bbox) {
     const empty = { type: 'FeatureCollection', features: [] };
-    if (!activeStations.length) return empty;
-    const latCell = Math.max(hideRadiusMi / 34.5, 0.004);
-    const lngCell = Math.max(hideRadiusMi / 26, 0.004);
-    const groups = new Map();
-    for (const s of activeStations) {
-      const key = `${Math.floor(s.lat / latCell)}_${Math.floor(s.lng / lngCell)}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(s);
+    let list = activeStations;
+    if (bbox) {
+      const pad = hideRadiusMi / 50;
+      list = activeStations.filter(s =>
+        s.lng >= bbox[0] - pad && s.lat >= bbox[1] - pad &&
+        s.lng <= bbox[2] + pad && s.lat <= bbox[3] + pad);
     }
-    const features = [];
-    for (const group of groups.values()) {
-      let acc = null;
-      for (const s of group) {
-        const c = turf.circle([s.lng, s.lat], hideRadiusMi, { steps: 10, units: 'miles' });
-        if (!acc) { acc = c; continue; }
-        try {
-          acc = turf.union(turf.featureCollection([acc, c])) || acc;
-        } catch (_) { features.push(c); }
+    if (!list.length) return empty;
+    const circles = list.map(s => {
+      const c = turf.circle([s.lng, s.lat], hideRadiusMi, { steps: 8, units: 'miles' });
+      c.properties = { k: 1 };
+      return c;
+    });
+    const fc = turf.featureCollection(circles);
+    try {
+      if (typeof turf.dissolve === 'function') {
+        const d = turf.dissolve(fc, { propertyName: 'k' });
+        if (d) return d.type === 'FeatureCollection' ? d : { type: 'FeatureCollection', features: [d] };
       }
-      if (acc) features.push(acc);
-    }
-    return { type: 'FeatureCollection', features };
+    } catch (_) { /* fall through */ }
+    try {
+      const mp = turf.multiPoint(list.map(s => [s.lng, s.lat]));
+      const buf = turf.buffer(mp, hideRadiusMi, { units: 'miles', steps: 8 });
+      if (buf) return buf.type === 'FeatureCollection' ? buf : { type: 'FeatureCollection', features: [buf] };
+    } catch (_) { /* fall through */ }
+    return fc;
   }
 
   function possibleAreaFromQuestions() {
@@ -242,6 +278,20 @@
       } else if (q.type === 'airport' && q.lat != null) {
         const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, AIRPORTS);
         if (cell) area = Geo().modifyMapData(area, cell, q.answer === 'same');
+      } else if (q.type === 'coastline' && q.lat != null && coastFeature) {
+        const measure = distToCoast(q.lat, q.lng);
+        try {
+          if (q.answer === 'closer') {
+            const buf = turf.buffer(coastFeature, measure + hideRadiusMi, { units: 'miles', steps: 16 });
+            if (buf) area = Geo().modifyMapData(area, buf, true);
+          } else {
+            const inner = measure - hideRadiusMi;
+            if (inner > 0.001) {
+              const buf = turf.buffer(coastFeature, inner, { units: 'miles', steps: 16 });
+              if (buf) area = Geo().modifyMapData(area, buf, false);
+            }
+          }
+        } catch (_) { /* skip coastline mask */ }
       }
     }
     return area;
@@ -264,6 +314,10 @@
         features.push(turf.feature(turf.lineString([
           [q.lngA, q.latA], [q.lngB, q.latB],
         ]).geometry, { kind: 'thermo-line', id: q.id, color: q.color }));
+      } else if (q.type === 'coastline' && q.lat != null) {
+        features.push(turf.feature(turf.point([q.lng, q.lat]).geometry, {
+          kind: 'coast-point', id: q.id, color: q.color,
+        }));
       } else if (q.type === 'airport' && q.lat != null) {
         for (const a of AIRPORTS) {
           features.push(turf.feature(turf.point([a.lng, a.lat]).geometry, {
@@ -275,15 +329,41 @@
     return { type: 'FeatureCollection', features };
   }
 
-  function questionTitle(q) {
-    if (q.type === 'radius') return `Radius · ${q.radius} ${q.unit || 'miles'}`;
-    if (q.type === 'thermometer') return 'Thermometer';
-    if (q.type === 'borough') return `Borough · ${q.borough || '?'}`;
-    return 'Nearest airport';
+  const TYPE_OPTS = [
+    ['radius', 'Radius Question'],
+    ['thermometer', 'Thermometer Question'],
+    ['coastline', 'Coastline Question'],
+    ['borough', 'Same Borough'],
+    ['airport', 'Same Airport'],
+  ];
+
+  function locCard(q, title, field, lat, lng) {
+    const pretty = fmtPretty(lat, lng).replace('\n', '<br>');
+    return `
+      <div class="loc-card" style="background:${q.color}" data-id="${q.id}" data-field="${field}">
+        <div class="loc-top">
+          <div class="loc-title">${title}</div>
+          <div class="loc-coords">${pretty}</div>
+        </div>
+        <div class="loc-actions">
+          <button type="button" class="q-edit" title="Edit coordinates">✎</button>
+          <button type="button" class="q-live" data-id="${q.id}" data-field="${field}" title="Use my location">◎</button>
+          <button type="button" class="q-copy" title="Copy">⧉</button>
+          <button type="button" class="q-paste" title="Paste">↓</button>
+        </div>
+        <div class="loc-edit" hidden>
+          <textarea class="${field === 'A' ? 'q-coord-a' : field === 'B' ? 'q-coord-b' : 'q-coord'}" data-id="${q.id}" rows="2" placeholder="Paste Maps link or lat, lng">${lat != null ? fmtCoord(lat, lng) : ''}</textarea>
+        </div>
+      </div>`;
   }
 
-  function liveBtn(id, field) {
-    return `<button type="button" class="game-btn small secondary q-live" data-id="${id}" data-field="${field}">Use my location</button>`;
+  function resultRow(q, left, right) {
+    return `
+      <div class="result-row q-answer" data-id="${q.id}">
+        <span>Result</span>
+        <button type="button" data-ans="${left.ans}"${q.answer === left.ans ? ' class="active"' : ''}>${left.label}</button>
+        <button type="button" data-ans="${right.ans}"${q.answer === right.ans ? ' class="active"' : ''}>${right.label}</button>
+      </div>`;
   }
 
   function renderList() {
@@ -291,23 +371,28 @@
     if (!el) return;
     el.innerHTML = '';
     if (!questions.length) {
-      el.innerHTML = '<p class="game-hint">Add a question, then paste coords, use live location, or drag the pin.</p>';
+      el.innerHTML = '<p class="game-hint">Add a question, then locate, paste, or drag the pin.</p>';
       return;
     }
     questions.forEach((q, i) => {
       const div = document.createElement('div');
       div.className = 'cb-item' + (q.open ? '' : ' collapsed');
       div.dataset.id = q.id;
+      const typeSel = TYPE_OPTS.map(([id, label]) =>
+        `<option value="${id}"${q.type === id ? ' selected' : ''}>${label}</option>`).join('');
       div.innerHTML = `
         <div class="cb-item-head">
-          <span class="cb-dot" style="background:${q.color}"></span>
-          <strong>${questionTitle(q)}</strong>
-          <button type="button" class="icon-btn q-up" data-id="${q.id}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
-          <button type="button" class="icon-btn q-down" data-id="${q.id}" ${i === questions.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button>
-          <button type="button" class="icon-btn q-toggle" data-id="${q.id}" aria-label="Collapse">${q.open ? '▾' : '▸'}</button>
-          <button type="button" class="icon-btn q-rm" data-id="${q.id}" aria-label="Remove">×</button>
+          <span>${q.open ? '▾' : '▸'} Measuring ${i + 1}</span>
         </div>
-        <div class="cb-item-body">${renderQuestionFields(q)}</div>`;
+        <div class="cb-item-body">
+          <select class="q-type" data-id="${q.id}">${typeSel}</select>
+          ${renderQuestionFields(q)}
+          <div class="q-foot">
+            <button type="button" class="q-up" data-id="${q.id}" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>
+            <button type="button" class="q-down" data-id="${q.id}" ${i === questions.length - 1 ? 'disabled' : ''} title="Move down">↓</button>
+            <button type="button" class="q-rm" data-id="${q.id}" title="Delete">🗑</button>
+          </div>
+        </div>`;
       el.appendChild(div);
     });
     el.querySelectorAll('.q-rm').forEach(btn => {
@@ -324,8 +409,7 @@
       btn.addEventListener('click', e => { e.stopPropagation(); moveQuestion(btn.dataset.id, 1); });
     });
     el.querySelectorAll('.cb-item-head').forEach(head => {
-      head.addEventListener('click', e => {
-        if (e.target.closest('.q-rm, .q-up, .q-down')) return;
+      head.addEventListener('click', () => {
         const id = head.closest('.cb-item')?.dataset.id;
         const q = questions.find(x => x.id === id);
         if (!q) return;
@@ -333,15 +417,16 @@
         save(); renderList();
       });
     });
+    el.querySelectorAll('.q-type').forEach(sel => {
+      sel.addEventListener('change', () => changeType(sel.dataset.id, sel.value));
+    });
     bindQuestionInputs(el);
   }
 
   function renderQuestionFields(q) {
     if (q.type === 'radius') {
       return `
-        <label>Center</label>
-        <textarea class="q-coord" data-id="${q.id}" rows="2" placeholder="Paste Maps link or lat, lng">${q.lat != null ? fmtCoord(q.lat, q.lng) : ''}</textarea>
-        <div class="q-tools">${liveBtn(q.id, 'center')}</div>
+        ${locCard(q, 'Location', 'center', q.lat, q.lng)}
         <div class="game-row">
           <input class="q-radius" data-id="${q.id}" type="number" step="any" inputmode="decimal" value="${q.radius}" min="0.01" />
           <select class="q-unit" data-id="${q.id}">
@@ -349,50 +434,34 @@
             <option value="kilometers"${q.unit === 'kilometers' ? ' selected' : ''}>km</option>
           </select>
         </div>
-        <p class="game-hint">Hider is inside or outside this radius. Drag the map pin to move the center.</p>
-        <div class="seg q-answer" data-id="${q.id}">
-          <button type="button" data-ans="within"${q.answer === 'within' ? ' class="active"' : ''}>Inside</button>
-          <button type="button" data-ans="outside"${q.answer === 'outside' ? ' class="active"' : ''}>Outside</button>
-        </div>`;
+        ${resultRow(q, { ans: 'outside', label: 'Hider Outside' }, { ans: 'within', label: 'Hider Inside' })}`;
     }
     if (q.type === 'thermometer') {
       return `
-        <label>Start</label>
-        <textarea class="q-coord-a" data-id="${q.id}" rows="2" placeholder="Paste start location">${q.latA != null ? fmtCoord(q.latA, q.lngA) : ''}</textarea>
-        <div class="q-tools">${liveBtn(q.id, 'A')}</div>
-        <label>End</label>
-        <textarea class="q-coord-b" data-id="${q.id}" rows="2" placeholder="Paste end location">${q.latB != null ? fmtCoord(q.latB, q.lngB) : ''}</textarea>
-        <div class="q-tools">${liveBtn(q.id, 'B')}</div>
-        <p class="game-hint">If warmer at the end, stations closer to start drop unless their hide circle straddles both sides. Drag the Start/End pins.</p>
-        <div class="seg q-answer" data-id="${q.id}">
-          <button type="button" data-ans="warmer"${q.answer === 'warmer' ? ' class="active"' : ''}>Warmer at end</button>
-          <button type="button" data-ans="colder"${q.answer === 'colder' ? ' class="active"' : ''}>Warmer at start</button>
-        </div>`;
+        ${locCard(q, 'Start', 'A', q.latA, q.lngA)}
+        ${locCard(q, 'End', 'B', q.latB, q.lngB)}
+        ${resultRow(q, { ans: 'colder', label: 'Warmer at start' }, { ans: 'warmer', label: 'Warmer at end' })}`;
+    }
+    if (q.type === 'coastline') {
+      const d = q.lat != null ? distToCoast(q.lat, q.lng) : null;
+      return `
+        ${locCard(q, 'Location', 'center', q.lat, q.lng)}
+        ${d != null && isFinite(d) ? `<p class="game-hint">${d.toFixed(2)} mi from coast</p>` : ''}
+        ${resultRow(q, { ans: 'further', label: 'Hider Further' }, { ans: 'closer', label: 'Hider Closer' })}`;
     }
     if (q.type === 'borough') {
       const opts = BOROUGHS.map(b =>
-        `<option value="${b}"${q.borough === b ? ' selected' : ''}>${b}</option>`,
-      ).join('');
+        `<option value="${b}"${q.borough === b ? ' selected' : ''}>${b}</option>`).join('');
       return `
-        <label>Your borough</label>
         <select class="q-borough" data-id="${q.id}">${opts}</select>
-        <div class="seg q-answer" data-id="${q.id}">
-          <button type="button" data-ans="same"${q.answer === 'same' ? ' class="active"' : ''}>Same</button>
-          <button type="button" data-ans="different"${q.answer === 'different' ? ' class="active"' : ''}>Different</button>
-        </div>`;
+        ${resultRow(q, { ans: 'different', label: 'Different' }, { ans: 'same', label: 'Same borough' })}`;
     }
     if (q.type === 'airport') {
       const near = q.lat != null ? nearestAirport({ lat: q.lat, lng: q.lng }) : null;
       return `
-        <label>Your location</label>
-        <textarea class="q-coord" data-id="${q.id}" rows="2" placeholder="Paste Maps link or coords">${q.lat != null ? fmtCoord(q.lat, q.lng) : ''}</textarea>
-        <div class="q-tools">${liveBtn(q.id, 'center')}</div>
-        ${near ? `<p class="game-hint">Nearest: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
-        <p class="game-hint">Skyports · LaGuardia · JFK</p>
-        <div class="seg q-answer" data-id="${q.id}">
-          <button type="button" data-ans="same"${q.answer === 'same' ? ' class="active"' : ''}>Same</button>
-          <button type="button" data-ans="different"${q.answer === 'different' ? ' class="active"' : ''}>Different</button>
-        </div>`;
+        ${locCard(q, 'Location', 'center', q.lat, q.lng)}
+        ${near ? `<p class="game-hint">Nearest: ${near.airport.name} (${near.miles.toFixed(1)} mi)</p>` : ''}
+        ${resultRow(q, { ans: 'different', label: 'Different' }, { ans: 'same', label: 'Same airport' })}`;
     }
     return '';
   }
@@ -414,9 +483,38 @@
       });
     });
     el.querySelectorAll('.q-live').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (window.JetLagCitibikeApp?.fillQuestionFromLocation) {
-          window.JetLagCitibikeApp.fillQuestionFromLocation(btn.dataset.id, btn.dataset.field);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        window.JetLagCitibikeApp?.fillQuestionFromLocation?.(btn.dataset.id, btn.dataset.field);
+      });
+    });
+    el.querySelectorAll('.q-edit').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const wrap = btn.closest('.loc-card')?.querySelector('.loc-edit');
+        if (wrap) wrap.hidden = !wrap.hidden;
+      });
+    });
+    el.querySelectorAll('.q-copy').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const card = btn.closest('.loc-card');
+        const ta = card?.querySelector('textarea');
+        if (ta?.value) navigator.clipboard?.writeText(ta.value);
+      });
+    });
+    el.querySelectorAll('.q-paste').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const card = btn.closest('.loc-card');
+        const ta = card?.querySelector('textarea');
+        try {
+          const text = await navigator.clipboard.readText();
+          if (ta) ta.value = text;
+          updateQuestionFromInputs(card.dataset.id);
+        } catch (_) {
+          const edit = ta?.closest('.loc-edit');
+          if (edit) { edit.hidden = false; ta.focus(); }
         }
       });
     });
@@ -427,7 +525,7 @@
     if (!q) return;
     const root = document.querySelector(`.cb-item[data-id="${id}"]`);
     if (!root) return;
-    if (q.type === 'radius' || q.type === 'airport') {
+    if (q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') {
       const pt = parseCoord(root.querySelector('.q-coord')?.value);
       if (pt) { q.lat = pt.lat; q.lng = pt.lng; }
       if (q.type === 'radius') {
@@ -464,6 +562,19 @@
     save(); notifyChange(); renderList();
   }
 
+  function changeType(id, type) {
+    const q = questions.find(x => x.id === id);
+    if (!q || q.type === type) return;
+    q.type = type;
+    q.answer = null;
+    if (type === 'radius') {
+      if (q.radius == null) q.radius = parseFloat(document.getElementById('cb-radius-val')?.value) || 1;
+      if (!q.unit) q.unit = 'miles';
+    }
+    if (type === 'borough' && !q.borough) q.borough = 'Manhattan';
+    save(); notifyChange(); renderList();
+  }
+
   function addQuestion(type) {
     const base = { id: crypto.randomUUID(), type, color: nextColor(), answer: null, open: true };
     if (type === 'radius') {
@@ -474,7 +585,7 @@
       questions.push({ ...base, latA: null, lngA: null, latB: null, lngB: null });
     } else if (type === 'borough') {
       questions.push({ ...base, borough: 'Manhattan' });
-    } else if (type === 'airport') {
+    } else if (type === 'airport' || type === 'coastline') {
       questions.push({ ...base, lat: null, lng: null });
     }
     save(); renderList(); notifyChange();
@@ -498,6 +609,12 @@
     } catch (e) {
       console.warn('borough load failed', e);
     }
+    try {
+      const coast = await (await fetch('data/coastline.geojson')).json();
+      coastFeature = coast.features?.[0] || null;
+    } catch (e) {
+      console.warn('coastline load failed', e);
+    }
 
     stations = (geojson.features || []).map((f, i) => {
       const [lng, lat] = f.geometry.coordinates;
@@ -511,6 +628,7 @@
         id: `${lng.toFixed(6)}_${lat.toFixed(6)}_${i}`,
         name: f.properties.name || `Station ${i}`,
         lng, lat, borough,
+        coastMi: distToCoast(lat, lng),
       };
     });
   }
@@ -520,6 +638,7 @@
     document.getElementById('cb-add-thermo')?.addEventListener('click', () => addQuestion('thermometer'));
     document.getElementById('cb-add-borough')?.addEventListener('click', () => addQuestion('borough'));
     document.getElementById('cb-add-airport')?.addEventListener('click', () => addQuestion('airport'));
+    document.getElementById('cb-add-coast')?.addEventListener('click', () => addQuestion('coastline'));
     document.getElementById('cb-clear-all')?.addEventListener('click', () => {
       if (!confirm('Remove all questions?')) return;
       questions = []; save(); notifyChange(); renderList();

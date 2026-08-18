@@ -10,7 +10,7 @@
   let theme = 'light';
   let zoneMode = 'overlap';
   let showTransit = false;
-  let show3D = false;
+  let show3D = true;
   let focusStation = null;
   let clickBound = false;
   let layersReady = false;
@@ -21,10 +21,15 @@
   let liveLngLat = null;
   let lastTap = { t: 0, lng: 0, lat: 0 };
 
-  const STYLES = {
-    light: 'mapbox://styles/mapbox/streets-v12',
-    dark: 'mapbox://styles/mapbox/dark-v11',
-  };
+  const STYLE = 'mapbox://styles/mapbox/standard';
+
+  function applyBasemap() {
+    if (!map) return;
+    try {
+      map.setConfigProperty('basemap', 'lightPreset', theme === 'dark' ? 'night' : 'day');
+      map.setConfigProperty('basemap', 'show3dObjects', !!show3D);
+    } catch (_) { /* classic styles */ }
+  }
 
   function setStatus(text) {
     const el = document.getElementById('cb-status');
@@ -63,11 +68,12 @@
     }
     mergeTimer = setTimeout(() => {
       const active = Game().getActiveStations();
-      setStatus(`Merging ${active.length} zones…`);
-      const data = Game().mergedZonesGeoJSON(active);
+      const b = map.getBounds();
+      const bbox = b ? [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] : null;
+      const data = Game().mergedZonesGeoJSON(active, bbox);
       if (map?.getSource('cb-merged')) map.getSource('cb-merged').setData(data);
       setStatus(`${active.length} / ${Game().stations.length} stations possible`);
-    }, 280);
+    }, 200);
   }
 
   function syncZoneVisibility() {
@@ -105,8 +111,9 @@
     if (!map) return;
     clearMarkers();
     for (const q of Game().getQuestions()) {
-      if ((q.type === 'radius' || q.type === 'airport') && q.lat != null) {
-        const m = new mapboxgl.Marker({ element: markerEl(q.type === 'radius' ? 'Radius' : 'You', q.color), draggable: true })
+      if ((q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') && q.lat != null) {
+        const label = q.type === 'radius' ? 'Radius' : q.type === 'coastline' ? 'Coast' : 'You';
+        const m = new mapboxgl.Marker({ element: markerEl(label, q.color), draggable: true })
           .setLngLat([q.lng, q.lat])
           .addTo(map);
         m.on('dragend', () => {
@@ -209,49 +216,15 @@
     lastTap = { t: now, lng: lngLat.lng, lat: lngLat.lat };
   }
 
-  function addParkLayers() {
-    if (!map.getSource('composite')) return;
-    const firstSymbol = map.getStyle().layers.find(l => l.type === 'symbol')?.id;
-    const parkColor = theme === 'dark' ? '#3f7a4a' : '#8fd18a';
-    const specs = [
-      { id: 'cb-parks-landuse', layer: 'landuse', filter: ['match', ['get', 'class'], ['park', 'pitch', 'grass', 'cemetery', 'wood', 'scrub', 'national_park', 'golf_course'], true, false] },
-      { id: 'cb-parks-cover', layer: 'landcover', filter: ['match', ['get', 'class'], ['grass', 'scrub', 'wood', 'crop'], true, false] },
-      { id: 'cb-parks-park', layer: 'park', filter: null },
-    ];
-    for (const spec of specs) {
-      if (map.getLayer(spec.id)) continue;
-      try {
-        const layer = {
-          id: spec.id, type: 'fill', source: 'composite', 'source-layer': spec.layer,
-          paint: { 'fill-color': parkColor, 'fill-opacity': spec.layer === 'landcover' ? 0.22 : 0.42 },
-        };
-        if (spec.filter) layer.filter = spec.filter;
-        if (firstSymbol) map.addLayer(layer, firstSymbol);
-        else map.addLayer(layer);
-      } catch (_) { /* style without this source-layer */ }
-    }
+  function addLayer(layer) {
+    if (!layer.slot) layer.slot = 'top';
+    if (!map.getLayer(layer.id)) map.addLayer(layer);
   }
 
+  function addParkLayers() { /* Mapbox Standard already styles parks */ }
+
   function add3DBuildings() {
-    if (!map.getSource('composite') || map.getLayer('cb-3d-buildings')) return;
-    const labelLayer = map.getStyle().layers.find(l => l.type === 'symbol')?.id;
-    try {
-      map.addLayer({
-        id: 'cb-3d-buildings',
-        source: 'composite',
-        'source-layer': 'building',
-        filter: ['>', ['coalesce', ['get', 'height'], 0], 0],
-        type: 'fill-extrusion',
-        minzoom: 14,
-        layout: { visibility: show3D ? 'visible' : 'none' },
-        paint: {
-          'fill-extrusion-color': theme === 'dark' ? '#3b4554' : '#d4cfc6',
-          'fill-extrusion-height': ['coalesce', ['get', 'height'], 0],
-          'fill-extrusion-base': ['coalesce', ['get', 'min_height'], 0],
-          'fill-extrusion-opacity': 0.72,
-        },
-      }, labelLayer);
-    } catch (_) { /* style without buildings */ }
+    applyBasemap();
   }
 
   function addTransitLayer() {
@@ -262,10 +235,10 @@
       tileSize: 256,
       attribution: '© Thunderforest, © OSM',
     });
-    map.addLayer({
-      id: 'tf-transport', type: 'raster', source: 'tf-transport',
+    addLayer({
+      id: 'tf-transport', type: 'raster', source: 'tf-transport', slot: 'top',
       layout: { visibility: showTransit ? 'visible' : 'none' },
-      paint: { 'raster-opacity': theme === 'dark' ? 0.38 : 0.32 },
+      paint: { 'raster-opacity': theme === 'dark' ? 0.28 : 0.3 },
     });
   }
 
@@ -298,14 +271,14 @@
     }
 
     if (!map.getLayer('cb-elim-fill')) {
-      map.addLayer({
+      addLayer({
         id: 'cb-elim-fill', type: 'fill', source: 'cb-elim',
         layout: { visibility: 'none' },
         paint: { 'fill-color': elimColor, 'fill-opacity': theme === 'dark' ? 0.5 : 0.42 },
       });
     }
     if (!map.getLayer('cb-zones-overlap')) {
-      map.addLayer({
+      addLayer({
         id: 'cb-zones-overlap', type: 'circle', source: 'cb-stations',
         paint: {
           'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 0, 0, 20, ['get', 'r20']],
@@ -319,44 +292,44 @@
       });
     }
     if (!map.getLayer('cb-merged-fill')) {
-      map.addLayer({
+      addLayer({
         id: 'cb-merged-fill', type: 'fill', source: 'cb-merged',
         paint: { 'fill-color': '#ffb020', 'fill-opacity': 0.22 },
       });
-      map.addLayer({
+      addLayer({
         id: 'cb-merged-line', type: 'line', source: 'cb-merged',
         paint: { 'line-color': '#e69500', 'line-width': 1.6 },
       });
     }
     if (!map.getLayer('cb-focus-outside-fill')) {
-      map.addLayer({
+      addLayer({
         id: 'cb-focus-outside-fill', type: 'fill', source: 'cb-focus-outside',
         layout: { visibility: 'none' },
         paint: { 'fill-color': elimColor, 'fill-opacity': 0.52 },
       });
-      map.addLayer({
+      addLayer({
         id: 'cb-focus-fill', type: 'fill', source: 'cb-focus',
         layout: { visibility: 'none' },
         paint: { 'fill-color': '#ffb020', 'fill-opacity': 0.18 },
       });
-      map.addLayer({
+      addLayer({
         id: 'cb-focus-line', type: 'line', source: 'cb-focus',
         layout: { visibility: 'none' },
         paint: { 'line-color': '#ffb020', 'line-width': 3 },
       });
     }
     if (!map.getLayer('cb-questions-thermo')) {
-      map.addLayer({
+      addLayer({
         id: 'cb-questions-thermo', type: 'line', source: 'cb-questions',
         filter: ['==', ['get', 'kind'], 'thermo-line'],
         paint: { 'line-color': ['get', 'color'], 'line-width': 3 },
       });
-      map.addLayer({
+      addLayer({
         id: 'cb-questions-radius-line', type: 'line', source: 'cb-questions',
         filter: ['==', ['get', 'kind'], 'radius-line'],
         paint: { 'line-color': ['get', 'color'], 'line-width': 2.4, 'line-dasharray': [1.2, 0.8] },
       });
-      map.addLayer({
+      addLayer({
         id: 'cb-questions-airports', type: 'circle', source: 'cb-questions',
         filter: ['==', ['get', 'kind'], 'airport'],
         paint: {
@@ -367,7 +340,7 @@
       });
     }
     if (!map.getLayer('cb-stations-active')) {
-      map.addLayer({
+      addLayer({
         id: 'cb-stations-active', type: 'circle', source: 'cb-stations',
         paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 3, 14, 7],
@@ -489,7 +462,7 @@
       theme = b.dataset.style;
       document.querySelectorAll('#cb-theme button').forEach(x => x.classList.toggle('active', x === b));
       document.body.classList.toggle('dark', theme === 'dark');
-      if (map) map.setStyle(STYLES[theme]);
+      applyBasemap();
     });
 
     document.getElementById('cb-zone-mode')?.addEventListener('click', e => {
@@ -509,10 +482,13 @@
 
     document.getElementById('cb-toggle-3d')?.addEventListener('change', e => {
       show3D = e.target.checked;
-      if (map?.getLayer('cb-3d-buildings')) {
-        map.setLayoutProperty('cb-3d-buildings', 'visibility', show3D ? 'visible' : 'none');
+      applyBasemap();
+      if (show3D) {
+        const z = map?.getZoom() || 10;
+        map?.easeTo({ pitch: 55, zoom: Math.max(z, 15), duration: 800 });
+      } else {
+        map?.easeTo({ pitch: 0, duration: 600 });
       }
-      map?.easeTo({ pitch: show3D ? 55 : 0, duration: 600 });
     });
 
     document.getElementById('cb-live-endgame')?.addEventListener('change', e => {
@@ -569,9 +545,10 @@
 
     map = new mapboxgl.Map({
       container: 'map',
-      style: STYLES[theme],
-      center: [-73.98, 40.72],
-      zoom: 10.4,
+      style: STYLE,
+      center: [-73.98, 40.75],
+      zoom: 12.2,
+      pitch: show3D ? 45 : 0,
       hash: true,
       attributionControl: true,
       antialias: true,
@@ -582,7 +559,19 @@
       trackUserLocation: true,
     }), 'top-right');
 
-    map.on('style.load', addMapLayers);
+    map.on('style.load', () => {
+      applyBasemap();
+      addMapLayers();
+    });
+    map.once('idle', () => {
+      applyBasemap();
+      if (show3D && map.getZoom() < 14) {
+        setStatus('Zoom in past 14 (or toggle 3D) to see buildings');
+      }
+    });
+    map.on('moveend', () => {
+      if (zoneMode === 'merged') scheduleMergedUpdate();
+    });
     bindChrome();
   }
 
