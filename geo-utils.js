@@ -173,10 +173,10 @@ window.JetLagGeo = (function () {
   }
 
   /** Everything closer to B (or to A) than to the other end. */
-  function bisectorHalfPlane(bis, towardB, spanMi) {
+  function bisectorHalfPlane(bis, towardB, spanMi, steps) {
     if (!bis) return WORLD;
     const span = spanMi || 500;
-    const near = bisectorArc(bis, span, 96);
+    const near = bisectorArc(bis, span, steps || 96);
     // Arc points are perpendicular to `pole`, so stepping along it by angle t
     // lands exactly t radians off the bisector. B's side is where P·pole < 0.
     const t = span / EARTH_RADIUS_MI;
@@ -373,13 +373,28 @@ window.JetLagGeo = (function () {
     return best;
   }
 
+  function mapRings(coords, fn) {
+    return coords.map(ring => ring.map(pt => fn(pt[0], pt[1])));
+  }
+
+  function projectFeature(f, xy) {
+    const g = f.geometry;
+    if (g.type === 'Polygon') {
+      return turf.polygon(mapRings(g.coordinates, xy), f.properties);
+    }
+    if (g.type === 'MultiPolygon') {
+      return turf.multiPolygon(g.coordinates.map(p => mapRings(p, xy)), f.properties);
+    }
+    return f;
+  }
+
   /**
    * Voronoi cell of whichever point in points[] is nearest to target.
    *
-   * turf.voronoi treats lng/lat as a flat plane, so its edges are equidistant in
-   * degrees rather than miles — around New York that misplaced airport cell edges
-   * by up to ten miles. The cell is instead the intersection of the exact
-   * bisector half-planes against every other point.
+   * The boundary is the geodesic perpendicular bisector against every other
+   * site. Intersecting those half-planes in lng/lat collapsed each edge to a
+   * couple of chords (one degree of longitude is shorter than one of latitude),
+   * so the clip happens in a local mile frame after the arcs are densified.
    */
   function voronoiCellContaining(target, points) {
     if (!points || !points.length) return null;
@@ -387,17 +402,163 @@ window.JetLagGeo = (function () {
     const i = nearestIndex(target, points);
     if (i < 0) return null;
     const own = points[i];
+    const frame = localFrame(own.lat, own.lng);
     let cell = null;
     for (let j = 0; j < points.length; j++) {
       if (j === i) continue;
       const bis = bisectorBetween(points[j], own);
       if (!bis) continue;
-      // `own` is B in this bisector, so keep the side toward B.
-      const half = bisectorHalfPlane(bis, true);
+      // 80 mi covers the metro; 160 steps keeps ~0.5 mi between vertices so
+      // Mapbox's straight segments still read as the geodesic.
+      const half = projectFeature(bisectorHalfPlane(bis, true, 80, 160), frame.xy);
       cell = cell ? intersect(cell, half) : half;
       if (!cell) return null;
     }
-    return cell;
+    return cell ? projectFeature(cell, frame.ll) : null;
+  }
+
+  /**
+   * Geodesic Voronoi edges of the cell containing target. Each line is the
+   * equidistant locus against one neighbour, clipped where a third site is
+   * closer — the same test station elimination uses, so the drawn line and the
+   * surviving stations always agree.
+   */
+  function voronoiBoundaryLines(target, points, spanMi) {
+    if (!points || points.length < 2) return [];
+    const i = nearestIndex(target, points);
+    if (i < 0) return [];
+    const own = points[i];
+    const span = spanMi || 40;
+    const lines = [];
+    for (let j = 0; j < points.length; j++) {
+      if (j === i) continue;
+      const bis = bisectorBetween(points[j], own);
+      if (!bis) continue;
+      const run = [];
+      const flush = () => {
+        if (run.length >= 2) lines.push(turf.lineString(run.slice()));
+        run.length = 0;
+      };
+      for (const v of bisectorArc(bis, span, 96)) {
+        const ll = toLngLat(v);
+        let ok = true;
+        for (let k = 0; k < points.length; k++) {
+          if (k === i || k === j) continue;
+          const b3 = bisectorBetween(points[k], own);
+          if (b3 && bisectorSignedMiles(b3, ll[0], ll[1]) < -0.02) { ok = false; break; }
+        }
+        if (ok) run.push(ll);
+        else flush();
+      }
+      flush();
+    }
+    return lines;
+  }
+
+  const AIRPORT_NAME_NEEDLES = {
+    skyports: ['skyport', 'seaplane', 'e 23', 'east 23', '23rd'],
+    lga: ['laguardia', 'lga'],
+    jfk: ['kennedy', 'jfk', 'idlewild'],
+  };
+
+  const AIRPORT_GEOCODE_Q = {
+    skyports: 'NY Skyports Seaplane Base, New York',
+    lga: 'LaGuardia Airport, New York',
+    jfk: 'John F. Kennedy International Airport, New York',
+  };
+
+  function scoreMapboxAirport(airport, props, distM) {
+    const name = (props?.name || '').toLowerCase();
+    const maki = (props?.maki || props?.class || '').toLowerCase();
+    let s = 0;
+    if (maki === 'airport' || maki === 'aerodrome') s += 50;
+    if (maki === 'heliport' || maki === 'airfield') s += 15;
+    const needles = AIRPORT_NAME_NEEDLES[airport.id] || [airport.name.toLowerCase()];
+    if (needles.some(n => name.includes(n))) s += 100;
+    s -= (Number(distM) || 0) * 0.01;
+    return s;
+  }
+
+  function featureLngLat(f) {
+    const g = f?.geometry;
+    if (g?.type === 'Point' && Number.isFinite(g.coordinates?.[0]) && Number.isFinite(g.coordinates?.[1])) {
+      return g.coordinates;
+    }
+    const c = f?.center;
+    if (Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1])) return c;
+    return null;
+  }
+
+  /**
+   * Snap airports onto the icons the loaded Mapbox style is actually drawing.
+   * Standard-style airport labels are not the same points as streets-v8 tilequery.
+   */
+  function snapAirportsFromMap(airports, map) {
+    if (!map || !airports?.length) return false;
+    let feats = [];
+    try { feats = (map.queryRenderedFeatures() || []).slice(); } catch (_) { feats = []; }
+    const sources = map.getStyle()?.sources || {};
+    for (const [id, src] of Object.entries(sources)) {
+      if (src.type === 'geojson') {
+        try { feats.push(...(map.querySourceFeatures(id) || [])); } catch (_) { /* skip */ }
+      } else if (src.type === 'vector') {
+        for (const layer of ['poi_label', 'poi', 'place_label', 'airport_label']) {
+          try { feats.push(...(map.querySourceFeatures(id, { sourceLayer: layer }) || [])); } catch (_) { /* skip */ }
+        }
+      }
+    }
+    let moved = false;
+    for (const a of airports) {
+      let best = null;
+      let bestScore = 40;
+      for (const f of feats) {
+        const p = f.properties || {};
+        const name = p.name || p.name_en || p.name_script || f.text || '';
+        const c = featureLngLat(f);
+        if (!c) continue;
+        const score = scoreMapboxAirport(a, { name, maki: p.maki || p.class || p.type }, 0);
+        if (score > bestScore) { bestScore = score; best = c; }
+      }
+      if (best && (Math.abs(best[0] - a.lng) > 1e-6 || Math.abs(best[1] - a.lat) > 1e-6)) {
+        a.lng = best[0];
+        a.lat = best[1];
+        moved = true;
+      } else if (best) {
+        a.lng = best[0];
+        a.lat = best[1];
+      }
+    }
+    return moved;
+  }
+
+  /**
+   * Geocode each airport with Mapbox's own place result (the pin the geocoder
+   * shares with Standard maps), then optionally refine from the live map.
+   */
+  async function snapAirportsToMapbox(airports, token) {
+    if (!token || String(token).indexOf('YOUR_MAPBOX') === 0 || !airports?.length) return airports;
+    await Promise.all(airports.map(async (a) => {
+      try {
+        const q = encodeURIComponent(AIRPORT_GEOCODE_Q[a.id] || a.name);
+        const geo = 'https://api.mapbox.com/geocoding/v5/mapbox.places/'
+          + `${q}.json?proximity=${a.lng},${a.lat}&limit=5`
+          + `&access_token=${encodeURIComponent(token)}`;
+        const gd = await fetch(geo).then(r => r.ok ? r.json() : null);
+        const ranked = (gd?.features || [])
+          .map(f => ({
+            f,
+            score: scoreMapboxAirport(a, {
+              name: `${f.text || ''} ${f.place_name || ''}`,
+              maki: f.properties?.maki || f.properties?.category,
+            }, 0),
+          }))
+          .sort((x, y) => y.score - x.score);
+        const hit = ranked.find(x => x.score >= 100)?.f || ranked[0]?.f;
+        const c = featureLngLat(hit);
+        if (c) { a.lng = c[0]; a.lat = c[1]; }
+      } catch (_) { /* keep the seed coordinate */ }
+    }));
+    return airports;
   }
 
   function unionMany(features) {
@@ -420,6 +581,6 @@ window.JetLagGeo = (function () {
     bisectorBetween, bisectorSignedMiles, bisectorHalfPlane, bisectorLine,
     localFrame, flattenRings, minDistanceToRingsMi, MI_PER_DEG_LAT,
     buildSegmentIndex, minDistanceIndexedMi,
-    voronoiCellContaining, unionMany, safePoly,
+    voronoiCellContaining, voronoiBoundaryLines, snapAirportsToMapbox, snapAirportsFromMap, unionMany, safePoly,
   };
 })();

@@ -12,8 +12,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const GBFS_INFO = 'https://gbfs.citibikenyc.com/gbfs/en/station_information.json';
-const GBFS_STATUS = 'https://gbfs.citibikenyc.com/gbfs/en/station_status.json';
+const GBFS_INFO = 'https://gbfs.lyft.com/gbfs/2.3/bkn/en/station_information.json';
+const GBFS_STATUS = 'https://gbfs.lyft.com/gbfs/2.3/bkn/en/station_status.json';
 const TILEQUERY = 'https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery';
 const OUT = path.join(__dirname, '../data/citibike_stations.geojson');
 const TOKEN = process.env.MAPBOX_TOKEN || '';
@@ -148,7 +148,7 @@ async function loadGbfsStations() {
       region_id: s.region_id,
       is_installed: statusById.get(s.station_id)?.is_installed ?? 0,
     }))
-    .filter(s => s.is_installed === 1);
+    .filter(s => Number.isFinite(s.lon) && Number.isFinite(s.lat));
 }
 
 async function main() {
@@ -188,6 +188,7 @@ async function main() {
         region_id: s.region_id,
         coord_source: hit ? 'mapbox' : 'gbfs',
         mapbox_name: hit?.mapbox_name,
+        is_installed: s.is_installed,
       },
       geometry: { type: 'Point', coordinates: [lng, lat] },
     };

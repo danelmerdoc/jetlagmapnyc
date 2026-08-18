@@ -166,10 +166,10 @@
   <button type="button" data-tab="game">Game</button>
 </div>
 <script src="config.js"></script>
-<script src="geo-utils.js?v=4"></script>
+<script src="geo-utils.js?v=6"></script>
 <script src="overpass.js"></script>
 <script src="hidezones.js"></script>
-<script src="game.js?v=2"></script>
+<script src="game.js?v=4"></script>
 <script>
 if (!window.MAPBOX_TOKEN) {
   document.body.innerHTML = '<p style="padding:2rem;font-family:sans-serif">Missing <code>config.js</code>. Copy <code>config.example.js</code> and add your Mapbox token.</p>';
@@ -376,7 +376,7 @@ async function addLayers() {
   // Hide zone + elimination layers on top of transit
   ['hide-zones-all-fill','hide-zones-all-line','hide-station-fill','hide-station-line',
    'hide-station-center','game-elimination-fill','game-radius-fill','game-radius-line',
-   'game-thermo-line','game-thermo-region','game-airport-cell','game-points'].forEach(id => {
+   'game-thermo-line','game-thermo-region','game-airport-cell','game-airport-edge','game-points'].forEach(id => {
     if (map.getLayer(id)) map.moveLayer(id);
   });
 

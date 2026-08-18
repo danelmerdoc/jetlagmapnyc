@@ -5,9 +5,9 @@
   const STORAGE_KEY = 'jetlagCitibikeQuestionsV3';
   const BOROUGHS = ['Manhattan', 'Bronx', 'Brooklyn', 'Queens', 'Staten Island', 'Jersey'];
   const AIRPORTS = [
-    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7351480012018, lng: -73.97289857268333 },
-    { id: 'lga', code: 'LGA', name: 'LaGuardia', lat: 40.77569627112248, lng: -73.87024238705636 },
-    { id: 'jfk', code: 'JFK', name: 'JFK', lat: 40.64290255140161, lng: -73.78581315279008 },
+    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7351534, lng: -73.9729007 },
+    { id: 'lga', code: 'LGA', name: 'LaGuardia Airport', lat: 40.7757145, lng: -73.8733640 },
+    { id: 'jfk', code: 'JFK', name: 'John F. Kennedy International Airport', lat: 40.6429479, lng: -73.7793734 },
   ];
 
   let colorIdx = 0;
@@ -643,6 +643,11 @@
             kind: 'airport', id: q.id, code: a.code, name: a.name, color: q.color,
           }));
         }
+        const edges = Geo().voronoiBoundaryLines({ lng: q.lng, lat: q.lat }, AIRPORTS);
+        for (const line of edges) {
+          line.properties = { kind: 'airport-edge', id: q.id, color: q.color };
+          features.push(line);
+        }
       }
     }
     return { type: 'FeatureCollection', features };
@@ -983,11 +988,21 @@
     if (onChange) onChange();
   }
 
+  function airportsMoved() {
+    airportBisectors.clear();
+    activeCache = { key: null, list: null };
+    areaCache = { key: null, area: null };
+    maskCache = { key: null, mask: null, border: null };
+    notifyChange();
+  }
+
   async function initStationData(geojson) {
     const [boro, coast] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
       fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
+      Geo().snapAirportsToMapbox(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
+    airportBisectors.clear();
     try {
       if (boro) {
         for (const f of boro.features) boroughPolys[f.properties.BoroName] = f;
@@ -1070,6 +1085,7 @@
     get hideRadiusMi() { return hideRadiusMi; },
     get stations() { return stations; },
     set onChange(fn) { onChange = fn; },
+    airportsMoved,
     BOROUGHS, AIRPORTS,
   };
 })();

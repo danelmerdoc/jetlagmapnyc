@@ -292,14 +292,21 @@
 
   async function loadStationData() {
     try {
-      const raw = await (await fetch('data/citibike_stations.geojson')).json();
+      const raw = await (await fetch('data/citibike_stations.geojson?v=2')).json();
       await Game().initStationData(raw);
       populateSearch();
       refreshMap();
+      snapAirportIcons();
     } catch (e) {
       setStatus('Could not load Citi Bike stations.');
       console.error(e);
     }
+  }
+
+  function snapAirportIcons() {
+    if (!map) return;
+    const moved = Geo().snapAirportsFromMap(Game().AIRPORTS, map);
+    if (moved) Game().airportsMoved();
   }
 
   function findStation(text) {
@@ -354,6 +361,8 @@
     set('cb-questions-airports', 'circle-stroke-color', casing);
     set('cb-questions-thermo-mid', 'circle-stroke-color', casing);
     set('cb-questions-thermo', 'line-opacity', theme === 'dark' ? 0.95 : 0.88);
+    set('cb-questions-airport-edge', 'line-width', theme === 'dark' ? 2.8 : 2.4);
+    set('cb-questions-airport-edge', 'line-opacity', theme === 'dark' ? 0.95 : 0.88);
     set('cb-questions-radius-line', 'line-width', theme === 'dark' ? 2.8 : 2.4);
     set('cb-questions-radius-line', 'line-opacity', theme === 'dark' ? 0.95 : 0.9);
     if (map.getLayer('tf-transport')) {
@@ -556,6 +565,15 @@
           'circle-radius': 6,
           'circle-color': ['coalesce', ['get', 'color'], '#ffb020'],
           'circle-stroke-color': casing, 'circle-stroke-width': 1.5,
+        },
+      });
+      addLayer({
+        id: 'cb-questions-airport-edge', type: 'line', source: 'cb-questions',
+        filter: ['==', ['get', 'kind'], 'airport-edge'],
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': theme === 'dark' ? 2.8 : 2.4,
+          'line-opacity': theme === 'dark' ? 0.95 : 0.88,
         },
       });
     }
@@ -781,6 +799,7 @@
     map.once('idle', () => {
       applyBasemap();
       map.jumpTo({ pitch: 0, bearing: 0 });
+      snapAirportIcons();
     });
     map.on('moveend', scheduleZoneUpdate);
   }

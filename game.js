@@ -4,9 +4,9 @@
   const COLORS = ['#ffb020', '#4da3ff', '#6bcb77', '#ff6b9d', '#c084fc', '#f97316', '#14b8a6'];
   const STORAGE_KEY = 'jetlagNycQuestionsV2';
   const PLAY_AIRPORTS = [
-    { id: 'lga', code: 'LGA', name: 'LaGuardia', lat: 40.77569627112248, lng: -73.87024238705636 },
-    { id: 'jfk', code: 'JFK', name: 'JFK', lat: 40.64290255140161, lng: -73.78581315279008 },
-    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7351480012018, lng: -73.97289857268333 },
+    { id: 'lga', code: 'LGA', name: 'LaGuardia Airport', lat: 40.7757145, lng: -73.8733640 },
+    { id: 'jfk', code: 'JFK', name: 'John F. Kennedy International Airport', lat: 40.6429479, lng: -73.7793734 },
+    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7351534, lng: -73.9729007 },
   ];
 
   let colorIdx = 0;
@@ -137,6 +137,11 @@
           features.push(turf.feature(turf.point([a.lng, a.lat]).geometry, {
             kind: 'airport', id: q.id, code: a.code, name: a.name,
           }));
+        }
+        const edges = Geo().voronoiBoundaryLines({ lng: q.lng, lat: q.lat }, PLAY_AIRPORTS);
+        for (const line of edges) {
+          line.properties = { kind: 'airport-edge', id: q.id, color: q.color };
+          features.push(line);
         }
         const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, PLAY_AIRPORTS);
         if (cell) {
@@ -320,6 +325,11 @@
 
   function installMapLayers(map) {
     mapRef = map;
+    Geo().snapAirportsToMapbox(PLAY_AIRPORTS, window.MAPBOX_TOKEN).then(() => {
+      if (mapRef) Geo().snapAirportsFromMap(PLAY_AIRPORTS, mapRef);
+      recomputeElimination();
+      syncQuestionLayers();
+    }).catch(() => {});
     if (!map.getSource('game-elimination')) {
       map.addSource('game-elimination', { type: 'geojson', data: Geo().WORLD });
       map.addLayer({
@@ -352,6 +362,11 @@
         id: 'game-thermo-region', type: 'fill', source: 'game-questions',
         filter: ['==', ['get', 'kind'], 'thermo-region'],
         paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.2 },
+      });
+      map.addLayer({
+        id: 'game-airport-edge', type: 'line', source: 'game-questions',
+        filter: ['==', ['get', 'kind'], 'airport-edge'],
+        paint: { 'line-color': ['get', 'color'], 'line-width': 2.5 },
       });
       map.addLayer({
         id: 'game-airport-cell', type: 'fill', source: 'game-questions',
