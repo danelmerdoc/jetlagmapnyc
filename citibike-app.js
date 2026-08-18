@@ -10,7 +10,6 @@
   let theme = 'light';
   let zoneMode = 'overlap';
   let showTransit = false;
-  let show3D = false;
   let focusStation = null;
   let clickBound = false;
   let layersReady = false;
@@ -30,17 +29,28 @@
     return { fill: '#3b82f6', fillOpacity: 0.32, border: '#2563eb', borderWidth: 2.4 };
   }
 
+  function zoneStyle() {
+    if (theme === 'dark') {
+      return {
+        fill: '#22d3ee', fillOpacity: 0.24, stroke: '#67e8f9', strokeOpacity: 0.9, focusStroke: '#a5f3fc',
+      };
+    }
+    return {
+      fill: '#ffb020', fillOpacity: 0.16, stroke: '#e69500', strokeOpacity: 0.55, focusStroke: '#ffb020',
+    };
+  }
+
   function applyBasemap() {
     if (!map) return;
     try {
       map.setConfigProperty('basemap', 'lightPreset', theme === 'dark' ? 'night' : 'day');
-      map.setConfigProperty('basemap', 'show3dObjects', !!show3D);
-      map.setConfigProperty('basemap', 'show3dBuildings', !!show3D);
-      map.setConfigProperty('basemap', 'show3dLandmarks', !!show3D);
-      map.setConfigProperty('basemap', 'show3dTrees', !!show3D);
-      map.setConfigProperty('basemap', 'show3dFacades', !!show3D);
+      map.setConfigProperty('basemap', 'show3dObjects', false);
+      map.setConfigProperty('basemap', 'show3dBuildings', false);
+      map.setConfigProperty('basemap', 'show3dLandmarks', false);
+      map.setConfigProperty('basemap', 'show3dTrees', false);
+      map.setConfigProperty('basemap', 'show3dFacades', false);
     } catch (_) { /* classic styles */ }
-    if (!show3D && map.getPitch() !== 0) map.setPitch(0);
+    if (map.getPitch() !== 0) map.setPitch(0);
   }
 
   function setStatus(text) {
@@ -50,8 +60,10 @@
 
   function stationFeaturesGeoJSON() {
     if (focusStation) return { type: 'FeatureCollection', features: [] };
+    const total = Game().stations.length;
+    if (!total) return { type: 'FeatureCollection', features: [] };
     const active = Game().getActiveStations();
-    setStatus(`${active.length} / ${Game().stations.length} stations possible`);
+    setStatus(`${active.length} / ${total} stations possible`);
     return {
       type: 'FeatureCollection',
       features: Game().activeStationFeatures(active),
@@ -126,7 +138,11 @@
   function syncMarkers() {
     if (!map) return;
     clearMarkers();
+    const c = map.getCenter();
+    const center = { lat: c.lat, lng: c.lng };
     for (const q of Game().getQuestions()) {
+      if (!q.open) continue;
+      Game().ensureQuestionCoords(q.id, center);
       if ((q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') && q.lat != null) {
         const m = new mapboxgl.Marker({ element: pinEl(q.color), draggable: true, anchor: 'bottom' })
           .setLngLat([q.lng, q.lat])
@@ -199,10 +215,32 @@
 
   function populateSearch() {
     const dl = document.getElementById('cb-station-list');
-    if (!dl) return;
-    dl.innerHTML = Game().stations.map(s =>
-      `<option value="${s.name.replace(/"/g, '&quot;')}">${s.borough}</option>`,
-    ).join('');
+    if (!dl || !Game().stations.length) return;
+    const run = () => {
+      dl.innerHTML = Game().stations.map(s =>
+        `<option value="${s.name.replace(/"/g, '&quot;')}">${s.borough}</option>`,
+      ).join('');
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run);
+    else setTimeout(run, 50);
+  }
+
+  function mapCenter() {
+    if (!map) return { lat: 40.75, lng: -73.98 };
+    const c = map.getCenter();
+    return { lat: c.lat, lng: c.lng };
+  }
+
+  async function loadStationData() {
+    try {
+      const raw = await (await fetch('data/citibike_stations.geojson')).json();
+      await Game().initStationData(raw);
+      populateSearch();
+      refreshMap();
+    } catch (e) {
+      setStatus('Could not load Citi Bike stations.');
+      console.error(e);
+    }
   }
 
   function findStation(text) {
@@ -240,9 +278,8 @@
     if (!map || !layersReady) return;
     const casing = theme === 'dark' ? '#0b0e13' : '#ffffff';
     const elim = elimStyle();
+    const zones = zoneStyle();
     const stationFill = theme === 'dark' ? '#8ec5ff' : '#003DA5';
-    const zoneStroke = theme === 'dark' ? '#ffc04d' : '#e69500';
-    const zoneFill = theme === 'dark' ? '#ffb020' : '#ffb020';
     const set = (id, prop, val) => { if (map.getLayer(id)) map.setPaintProperty(id, prop, val); };
     set('cb-elim-fill', 'fill-color', elim.fill);
     set('cb-elim-fill', 'fill-opacity', elim.fillOpacity);
@@ -250,12 +287,17 @@
     set('cb-possible-border', 'line-width', elim.borderWidth);
     set('cb-focus-outside-fill', 'fill-color', elim.fill);
     set('cb-focus-outside-fill', 'fill-opacity', elim.fillOpacity + 0.08);
-    set('cb-zones-overlap', 'circle-color', zoneFill);
-    set('cb-zones-overlap', 'circle-stroke-color', zoneStroke);
-    set('cb-merged-fill', 'fill-color', zoneFill);
-    set('cb-merged-line', 'line-color', zoneStroke);
-    set('cb-focus-fill', 'fill-color', zoneFill);
-    set('cb-focus-line', 'line-color', zoneStroke);
+    set('cb-zones-overlap', 'circle-color', zones.fill);
+    set('cb-zones-overlap', 'circle-opacity', zones.fillOpacity);
+    set('cb-zones-overlap', 'circle-stroke-color', zones.stroke);
+    set('cb-zones-overlap', 'circle-stroke-opacity', zones.strokeOpacity);
+    set('cb-merged-fill', 'fill-color', zones.fill);
+    set('cb-merged-fill', 'fill-opacity', zones.fillOpacity + 0.06);
+    set('cb-merged-line', 'line-color', zones.stroke);
+    set('cb-merged-line', 'line-opacity', zones.strokeOpacity);
+    set('cb-focus-fill', 'fill-color', zones.fill);
+    set('cb-focus-fill', 'fill-opacity', zones.fillOpacity + 0.04);
+    set('cb-focus-line', 'line-color', zones.focusStroke);
     set('cb-stations-active', 'circle-color', stationFill);
     set('cb-stations-active', 'circle-stroke-color', casing);
     set('cb-questions-airports', 'circle-stroke-color', casing);
@@ -273,10 +315,6 @@
   }
 
   function addParkLayers() { /* Mapbox Standard already styles parks */ }
-
-  function add3DBuildings() {
-    applyBasemap();
-  }
 
   function addTransitLayer() {
     if (map.getSource('tf-transport')) return;
@@ -298,6 +336,7 @@
     clickBound = false;
     const casing = theme === 'dark' ? '#0b0e13' : '#ffffff';
     const elim = elimStyle();
+    const zones = zoneStyle();
 
     addParkLayers();
     addTransitLayer();
@@ -347,11 +386,11 @@
         id: 'cb-zones-overlap', type: 'circle', source: 'cb-stations',
         paint: {
           'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 0, 0, 20, ['get', 'r20']],
-          'circle-color': '#ffb020',
-          'circle-opacity': 0.16,
-          'circle-stroke-color': '#e69500',
-          'circle-stroke-opacity': 0.55,
-          'circle-stroke-width': 1.1,
+          'circle-color': zones.fill,
+          'circle-opacity': zones.fillOpacity,
+          'circle-stroke-color': zones.stroke,
+          'circle-stroke-opacity': zones.strokeOpacity,
+          'circle-stroke-width': 1.4,
           'circle-pitch-alignment': 'map',
         },
       });
@@ -359,11 +398,11 @@
     if (!map.getLayer('cb-merged-fill')) {
       addLayer({
         id: 'cb-merged-fill', type: 'fill', source: 'cb-merged',
-        paint: { 'fill-color': '#ffb020', 'fill-opacity': 0.22 },
+        paint: { 'fill-color': zones.fill, 'fill-opacity': zones.fillOpacity + 0.06 },
       });
       addLayer({
         id: 'cb-merged-line', type: 'line', source: 'cb-merged',
-        paint: { 'line-color': '#e69500', 'line-width': 1.6 },
+        paint: { 'line-color': zones.stroke, 'line-width': 1.6, 'line-opacity': zones.strokeOpacity },
       });
     }
     if (!map.getLayer('cb-focus-outside-fill')) {
@@ -375,12 +414,12 @@
       addLayer({
         id: 'cb-focus-fill', type: 'fill', source: 'cb-focus',
         layout: { visibility: 'none' },
-        paint: { 'fill-color': '#ffb020', 'fill-opacity': 0.18 },
+        paint: { 'fill-color': zones.fill, 'fill-opacity': zones.fillOpacity + 0.04 },
       });
       addLayer({
         id: 'cb-focus-line', type: 'line', source: 'cb-focus',
         layout: { visibility: 'none' },
-        paint: { 'line-color': '#ffb020', 'line-width': 3 },
+        paint: { 'line-color': zones.focusStroke, 'line-width': 3 },
       });
     }
     if (!map.getLayer('cb-questions-thermo')) {
@@ -451,7 +490,7 @@
     }
 
     layersReady = true;
-    add3DBuildings();
+    applyBasemap();
     updateThemePaint();
     refreshMap();
   }
@@ -555,20 +594,6 @@
       }
     });
 
-    const cb3d = document.getElementById('cb-toggle-3d');
-    if (cb3d) cb3d.checked = show3D;
-
-    document.getElementById('cb-toggle-3d')?.addEventListener('change', e => {
-      show3D = e.target.checked;
-      applyBasemap();
-      if (show3D) {
-        const z = map?.getZoom() || 10;
-        map?.easeTo({ pitch: 55, zoom: Math.max(z, 15), duration: 800 });
-      } else {
-        map?.easeTo({ pitch: 0, duration: 600 });
-      }
-    });
-
     document.getElementById('cb-live-endgame')?.addEventListener('change', e => {
       if (e.target.checked) startLiveEndgame();
       else stopLiveEndgame();
@@ -607,19 +632,12 @@
       return;
     }
     mapboxgl.accessToken = window.MAPBOX_TOKEN;
+    setStatus('Loading map…');
 
-    try {
-      const raw = await (await fetch('data/citibike_stations.geojson')).json();
-      await Game().initStationData(raw);
-    } catch (e) {
-      setStatus('Could not load Citi Bike stations.');
-      console.error(e);
-      return;
-    }
-    populateSearch();
     Game().onChange = refreshMap;
     Game().bindUI();
     Game().renderList();
+    bindChrome();
 
     map = new mapboxgl.Map({
       container: 'map',
@@ -629,8 +647,8 @@
       pitch: 0,
       bearing: 0,
       hash: true,
+      fadeDuration: 0,
       attributionControl: true,
-      antialias: true,
       config: {
         basemap: {
           show3dObjects: false,
@@ -641,7 +659,7 @@
         },
       },
     });
-    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), 'top-right');
+    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: false }), 'top-right');
     map.addControl(new mapboxgl.GeolocateControl({
       positionOptions: { enableHighAccuracy: true },
       trackUserLocation: true,
@@ -650,18 +668,18 @@
     map.on('style.load', () => {
       applyBasemap();
       addMapLayers();
+      loadStationData();
     });
     map.once('idle', () => {
       applyBasemap();
-      if (!show3D) map.easeTo({ pitch: 0, bearing: 0, duration: 0 });
+      map.jumpTo({ pitch: 0, bearing: 0 });
     });
     map.on('moveend', () => {
       if (zoneMode === 'merged') scheduleMergedUpdate();
     });
-    bindChrome();
   }
 
-  window.JetLagCitibikeApp = { fillQuestionFromLocation };
+  window.JetLagCitibikeApp = { fillQuestionFromLocation, mapCenter };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();

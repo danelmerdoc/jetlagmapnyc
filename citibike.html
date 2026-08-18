@@ -162,10 +162,9 @@
       <button type="button" data-style="light" class="active">Light</button>
       <button type="button" data-style="dark">Dark</button>
     </div>
-    <label class="row"><input type="checkbox" id="cb-toggle-transit" /> Subtle transit layer</label>
-    <label class="row"><input type="checkbox" id="cb-toggle-3d" /> 3D buildings</label>
-    <label class="row"><input type="checkbox" id="cb-live-endgame" /> Live location (endgame)</label>
-    <p class="game-hint">Toggle 3D buildings and zoom in to tilt the map. Endgame tracking shows whether you are inside the selected hide zone.</p>
+    <label class="row"><input type="checkbox" id="cb-toggle-transit" /> Transit layer</label>
+    <label class="row"><input type="checkbox" id="cb-live-endgame" /> Live location</label>
+    <p class="game-hint">Live location shows whether you are inside a selected station hide zone.</p>
 
     <div class="section">Hide zones</div>
     <label>Hide radius</label>
@@ -189,7 +188,7 @@
     </div>
 
     <div class="section">Questions</div>
-    <p class="sub">Paste a Maps link or coords, or use live location. Drag the pins on the map to adjust. Stations stay only if their hide circle could still contain the hider.</p>
+    <p class="sub">Open a question to place pins on the map. Paste coords (decimal or DMS), drag pins, or use live location. Stations are removed only when their entire hide zone is ruled out.</p>
     <div class="game-row">
       <input id="cb-radius-val" type="number" step="any" value="1" min="0.01" inputmode="decimal" />
       <select id="cb-radius-unit">
