@@ -1444,7 +1444,6 @@
       fetch('data/playable.geojson?v=8').then(r => r.json()).catch(() => null),
       fetch('data/grey.geojson?v=8').then(r => r.json()).catch(() => null),
       fetch('data/playable_border.geojson?v=8').then(r => r.json()).catch(() => null),
-      Geo().snapAirportsToMapbox(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
     airportBisectors.clear();
     try {

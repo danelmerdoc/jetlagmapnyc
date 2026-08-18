@@ -344,13 +344,7 @@
   function snapAirportIcons() {
     if (!map) return;
     const result = Geo().snapAirportsFromMap(Game().AIRPORTS, map) || {};
-    const snapped = new Set(result.snappedIds || []);
     if (result.moved) Game().airportsMoved();
-    const missing = Game().AIRPORTS.filter(a => !snapped.has(a.id));
-    if (!missing.length) return;
-    Geo().snapAirportsToMapbox(missing, window.MAPBOX_TOKEN)
-      .then(() => Game().airportsMoved())
-      .catch(() => {});
   }
 
   function findStation(text) {

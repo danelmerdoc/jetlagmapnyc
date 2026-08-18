@@ -481,12 +481,6 @@ window.JetLagGeo = (function () {
     jfk: ['kennedy'],
   };
 
-  // Mapbox Standard `airport-label` reads composite source-layer `airport_label`
-  // from mapbox-streets-v8-lite (same points as full streets-v8).
-  const AIRPORT_LABEL_TILESETS = [
-    'mapbox.mapbox-streets-v8-lite',
-    'mapbox.mapbox-streets-v8',
-  ];
   const AIRPORT_SNAP_MAX_DEG = 0.04; // ~2.7 mi; keeps EWR / Teterboro out
 
   function airportMakiOk(airport, props) {
@@ -605,37 +599,16 @@ window.JetLagGeo = (function () {
     return { moved, snappedIds };
   }
 
-  async function tilequeryAirportLabel(lng, lat, token, tileset) {
-    const url = `https://api.mapbox.com/v4/${tileset}/tilequery/${lng},${lat}.json`
-      + '?layers=airport_label&radius=8000&limit=20'
-      + `&access_token=${encodeURIComponent(token)}`;
-    const data = await fetch(url).then(r => r.ok ? r.json() : null);
-    return data?.features || [];
-  }
-
   /**
-   * Fallback when the live map has not loaded airport-label tiles yet.
-   * Queries the same airport_label layer Standard draws — never Search Box
-   * or poi_label (those snap to terminal shops / the Skyport garage).
+   * Airports are pre-seeded to Mapbox airport-label coordinates.
+   * No Tilequery or Search Box — those APIs are not used at runtime.
    */
-  async function snapAirportsToMapbox(airports, token) {
-    if (!token || String(token).indexOf('YOUR_MAPBOX') === 0 || !airports?.length) return airports;
-    await Promise.all(airports.map(async (a) => {
-      try {
-        let feats = [];
-        for (const tileset of AIRPORT_LABEL_TILESETS) {
-          feats = await tilequeryAirportLabel(a.lng, a.lat, token, tileset);
-          if (feats.length) break;
-        }
-        const c = pickAirportIcon(a, feats);
-        if (c) { a.lng = c[0]; a.lat = c[1]; }
-      } catch (_) { /* keep the airport-label seed */ }
-    }));
+  async function snapAirportsToMapbox(airports) {
     return airports;
   }
 
-  async function snapAirportsViaTilequery(airports, token) {
-    return snapAirportsToMapbox(airports, token);
+  async function snapAirportsViaTilequery(airports) {
+    return airports;
   }
 
   function unionMany(features) {

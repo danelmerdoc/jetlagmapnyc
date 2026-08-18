@@ -326,12 +326,9 @@
   function installMapLayers(map) {
     mapRef = map;
     const applyAirportSnap = () => {
-      const result = Geo().snapAirportsFromMap(PLAY_AIRPORTS, map) || {};
-      const snapped = new Set(result.snappedIds || []);
-      const missing = PLAY_AIRPORTS.filter(a => !snapped.has(a.id));
-      const finish = () => { recomputeElimination(); syncQuestionLayers(); };
-      if (!missing.length) { finish(); return; }
-      Geo().snapAirportsToMapbox(missing, window.MAPBOX_TOKEN).then(finish).catch(finish);
+      Geo().snapAirportsFromMap(PLAY_AIRPORTS, map);
+      recomputeElimination();
+      syncQuestionLayers();
     };
     applyAirportSnap();
     if (map.once) map.once('idle', applyAirportSnap);
