@@ -271,8 +271,9 @@
   function boroughLand(name) {
     if (boroughLandCache[name] !== undefined) return boroughLandCache[name];
     const poly = boroughPolys[name] || null;
+    if (!poly) return null;
     let land = poly;
-    if (poly && poly.geometry.type === 'MultiPolygon') {
+    if (poly.geometry.type === 'MultiPolygon') {
       const parts = poly.geometry.coordinates;
       let mainIdx = 0;
       let mainArea = -1;
@@ -291,6 +292,21 @@
     return land;
   }
 
+  function boroughDataReady() {
+    return BOROUGHS.filter(b => b !== 'Jersey').every(b => boroughPolys[b]);
+  }
+
+  function clearBoroughCaches() {
+    for (const k of Object.keys(boroughLandCache)) delete boroughLandCache[k];
+    for (const k of Object.keys(boroughMaskCache)) delete boroughMaskCache[k];
+    for (const k of Object.keys(boroughIndexCache)) delete boroughIndexCache[k];
+    for (const k of Object.keys(boroughEdgeCache)) delete boroughEdgeCache[k];
+    for (const k of Object.keys(otherLandCache)) delete otherLandCache[k];
+    jerseyPoly = null;
+    playableAreaCache = null;
+    playableIndexCache = null;
+  }
+
   const boroughMaskCache = {};
 
   let playableAreaCache = null;
@@ -305,10 +321,12 @@
   }
 
   function playableAreaPoly() {
+    if (!boroughDataReady()) return null;
     if (playableAreaCache) return playableAreaCache;
     const parts = BOROUGHS.filter(b => b !== 'Jersey').map(b => boroughLand(b)).filter(Boolean);
+    if (parts.length < 5) return null;
     parts.push(hobokenPoly(), jerseyCityPoly());
-    playableAreaCache = parts.length ? Geo().unionMany(parts) : null;
+    playableAreaCache = Geo().unionMany(parts);
     return playableAreaCache;
   }
 
@@ -1189,8 +1207,8 @@
       Geo().snapAirportsToMapbox(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
     airportBisectors.clear();
-    playableAreaCache = null;
-    playableIndexCache = null;
+    clearBoroughCaches();
+    boroughPolys = {};
     areaCache = { key: null, area: null };
     maskCache = { key: null, mask: null, border: null };
     activeCache = { key: null, list: null };
