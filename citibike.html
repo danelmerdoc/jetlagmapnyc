@@ -57,8 +57,9 @@
     flex:1; font-size:12px; padding:9px 6px; border:1px solid var(--border); background:transparent;
     color:var(--text); border-radius:8px; cursor:pointer;
   }
-  .seg button.active { background:var(--accent); color:#0c1929; border-color:var(--accent); font-weight:700; }
+  .seg button.active { background:var(--accent); color:#1a1408; border-color:var(--accent); font-weight:700; }
   body.dark input, body.dark select, body.dark textarea { background:var(--card); }
+  body.dark .seg button.active, body.dark .game-btn { color:#0c1929; }
   .row { display:flex; align-items:center; gap:8px; font-size:13px; padding:6px 0; cursor:pointer; min-height:32px; }
   .row input { accent-color:var(--accent); width:18px; height:18px; flex:0 0 auto; }
   hr { border:none; border-top:1px solid var(--border); margin:12px 0; }
@@ -72,7 +73,7 @@
   .game-row input[type="range"] { flex:1; accent-color:var(--accent); }
   .game-btn {
     font-size:13px; padding:10px 12px; border:1px solid var(--border); border-radius:8px;
-    background:var(--accent); color:#0c1929; font-weight:700; cursor:pointer; width:100%; margin-top:6px;
+    background:var(--accent); color:#1a1408; font-weight:700; cursor:pointer; width:100%; margin-top:6px;
   }
   .game-btn.secondary { background:transparent; color:var(--text); font-weight:600; }
   .game-btn.small { width:auto; padding:7px 10px; font-size:12px; margin-top:0; }
@@ -211,8 +212,8 @@
   </div>
 </div>
 <script src="config.js"></script>
-<script src="geo-utils.js?v=2"></script>
-<script src="citibike-game.js?v=6"></script>
-<script src="citibike-app.js?v=6"></script>
+<script src="geo-utils.js?v=4"></script>
+<script src="citibike-game.js?v=8"></script>
+<script src="citibike-app.js?v=8"></script>
 </body>
 </html>

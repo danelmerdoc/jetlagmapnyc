@@ -25,6 +25,7 @@
   const ZONE_GEOJSON_OPTS = { tolerance: 0 };
   const STATION_DOT_RADIUS = ['interpolate', ['linear'], ['zoom'], 9, 1.5, 12, 2.5, 14, 4];
   const STATION_DOT_STROKE = 0.9;
+  const EMPTY = { type: 'FeatureCollection', features: [] };
 
   function elimStyle() {
     if (theme === 'dark') {
@@ -49,14 +50,14 @@
       };
     }
     return {
-      fill: '#22d3ee',
-      fillOpacity: 0.2,
-      stroke: '#0891b2',
-      strokeOpacity: 0.85,
+      fill: '#ffb020',
+      fillOpacity: 0.22,
+      stroke: '#e69500',
+      strokeOpacity: 0.75,
       strokeWidth: 2,
-      focusStroke: '#06b6d4',
-      focusFillOpacity: 0.26,
-      haloFill: '#22d3ee',
+      focusStroke: '#ffb020',
+      focusFillOpacity: 0.28,
+      haloFill: '#ffb020',
       haloOpacity: 0,
       emissive: 0,
     };
@@ -115,11 +116,6 @@
     };
   }
 
-  function overlapZonesGeoJSON() {
-    if (focusStation) return { type: 'FeatureCollection', features: [] };
-    return Game().overlapZonesGeoJSON(Game().getActiveStations());
-  }
-
   function focusGeoJSON() {
     if (!focusStation) return { type: 'FeatureCollection', features: [] };
     const circle = Game().stationCircle(focusStation);
@@ -132,29 +128,36 @@
     return Geo().holedMask(Game().stationCircle(focusStation));
   }
 
-  function updateMergedZones() {
-    if (!map?.getSource('cb-merged')) return;
-    if (zoneMode !== 'merged' || focusStation) {
-      map.getSource('cb-merged').setData({ type: 'FeatureCollection', features: [] });
-      return;
-    }
-    const active = Game().getActiveStations();
-    const b = map.getBounds();
-    const bbox = b ? [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] : null;
-    const data = Game().mergedZonesGeoJSON(active, bbox);
-    map.getSource('cb-merged').setData(data);
-    setStatus(`${active.length} / ${Game().stations.length} stations possible`);
+  function currentBbox() {
+    const b = map?.getBounds?.();
+    if (!b) return null;
+    return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
   }
 
-  function scheduleMergedUpdate() {
-    clearTimeout(mergeTimer);
-    if (zoneMode !== 'merged' || focusStation) {
-      if (map?.getSource('cb-merged')) {
-        map.getSource('cb-merged').setData({ type: 'FeatureCollection', features: [] });
-      }
-      return;
+  /** Zones are rebuilt for the visible area only, which keeps phones responsive. */
+  function updateZoneSources() {
+    if (!map || !layersReady) return;
+    const overlapSrc = map.getSource('cb-zones-overlap');
+    const mergedSrc = map.getSource('cb-merged');
+    if (!overlapSrc && !mergedSrc) return;
+    const drawing = !focusStation && zoneMode !== 'off';
+    const active = drawing ? Game().getActiveStations() : null;
+    const bbox = drawing ? currentBbox() : null;
+    if (overlapSrc) {
+      overlapSrc.setData(drawing && zoneMode === 'overlap'
+        ? Game().overlapZonesGeoJSON(active, bbox)
+        : EMPTY);
     }
-    mergeTimer = setTimeout(updateMergedZones, 120);
+    if (mergedSrc) {
+      mergedSrc.setData(drawing && zoneMode === 'merged'
+        ? Game().mergedZonesGeoJSON(active, bbox)
+        : EMPTY);
+    }
+  }
+
+  function scheduleZoneUpdate() {
+    clearTimeout(mergeTimer);
+    mergeTimer = setTimeout(updateZoneSources, 90);
   }
 
   function syncZoneVisibility() {
@@ -239,21 +242,17 @@
   function refreshMap() {
     if (!map || !layersReady) return;
     if (map.getSource('cb-stations')) map.getSource('cb-stations').setData(stationFeaturesGeoJSON());
-    if (map.getSource('cb-zones-overlap')) map.getSource('cb-zones-overlap').setData(overlapZonesGeoJSON());
     if (map.getSource('cb-questions')) map.getSource('cb-questions').setData(Game().questionsGeoJSON());
     if (map.getSource('cb-focus')) map.getSource('cb-focus').setData(focusGeoJSON());
     if (map.getSource('cb-focus-outside')) map.getSource('cb-focus-outside').setData(focusOutsideMask());
     if (map.getSource('cb-elim')) {
-      map.getSource('cb-elim').setData(focusStation ? { type: 'FeatureCollection', features: [] } : Game().eliminatedMask());
+      map.getSource('cb-elim').setData(focusStation ? EMPTY : Game().eliminatedMask());
     }
     if (map.getSource('cb-possible')) {
-      map.getSource('cb-possible').setData(
-        focusStation ? { type: 'FeatureCollection', features: [] } : Game().possibleAreaGeoJSON(),
-      );
+      map.getSource('cb-possible').setData(focusStation ? EMPTY : Game().possibleAreaGeoJSON());
     }
     syncZoneVisibility();
-    if (zoneMode === 'merged' && !focusStation) updateMergedZones();
-    else scheduleMergedUpdate();
+    updateZoneSources();
     syncMarkers();
     updateLiveBanner();
     if (map.doubleClickZoom) {
@@ -398,7 +397,7 @@
     }
     if (!map.getSource('cb-zones-overlap')) {
       map.addSource('cb-zones-overlap', {
-        type: 'geojson', data: overlapZonesGeoJSON(), ...ZONE_GEOJSON_OPTS,
+        type: 'geojson', data: EMPTY, ...ZONE_GEOJSON_OPTS,
       });
     }
     if (!map.getSource('cb-merged')) {
@@ -673,7 +672,6 @@
       zoneMode = b.dataset.mode;
       document.querySelectorAll('#cb-zone-mode button').forEach(x => x.classList.toggle('active', x === b));
       refreshMap();
-      if (zoneMode === 'merged') updateMergedZones();
     });
 
     document.getElementById('cb-toggle-transit')?.addEventListener('change', e => {
@@ -763,9 +761,7 @@
       applyBasemap();
       map.jumpTo({ pitch: 0, bearing: 0 });
     });
-    map.on('moveend', () => {
-      if (zoneMode === 'merged') scheduleMergedUpdate();
-    });
+    map.on('moveend', scheduleZoneUpdate);
   }
 
   window.JetLagCitibikeApp = { fillQuestionFromLocation, mapCenter };

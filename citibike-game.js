@@ -16,6 +16,8 @@
   let stations = [];
   let boroughPolys = {};
   let coastFeature = null;
+  let coastSimple = null;
+  let coastMask = null;
   let onChange = null;
 
   function nextColor() {
@@ -97,29 +99,72 @@
     return `${Math.abs(lat).toFixed(5)}° ${ns}\n${Math.abs(lng).toFixed(5)}° ${ew}`;
   }
 
+  function geometryRings(feature) {
+    if (!feature) return [];
+    const g = feature.geometry;
+    if (!g) return [];
+    if (g.type === 'LineString') return [g.coordinates];
+    if (g.type === 'MultiLineString' || g.type === 'Polygon') return g.coordinates.slice();
+    if (g.type === 'MultiPolygon') {
+      const out = [];
+      for (const poly of g.coordinates) for (const ring of poly) out.push(ring);
+      return out;
+    }
+    return [];
+  }
+
+  let coastIndex = null;
+
+  function coastlineIndex() {
+    if (coastIndex) return coastIndex;
+    coastIndex = Geo().buildSegmentIndex(geometryRings(coastSimple || coastFeature), 0.02);
+    return coastIndex;
+  }
+
   function distToCoast(lat, lng) {
     if (!coastFeature) return Infinity;
-    const pt = turf.point([lng, lat]);
-    const g = coastFeature.geometry;
-    if (g.type === 'LineString') {
-      return turf.pointToLineDistance(pt, coastFeature, { units: 'miles' });
-    }
-    let best = Infinity;
-    for (const coords of g.coordinates || []) {
-      try {
-        const d = turf.pointToLineDistance(pt, turf.lineString(coords), { units: 'miles' });
-        if (d < best) best = d;
-      } catch (_) { /* skip */ }
-    }
-    return best;
+    return Geo().minDistanceIndexedMi(coastlineIndex(), lng, lat);
   }
 
-  function stationCircle(st) {
-    return turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 64, units: 'miles' });
-  }
+  const MI_PER_DEG = 69.0546;
 
+  /** Equirectangular distance — accurate to well under a foot at city scale. */
   function distMi(a, b) {
-    return turf.distance(turf.point([a.lng, a.lat]), turf.point([b.lng, b.lat]), { units: 'miles' });
+    const dLat = (b.lat - a.lat) * MI_PER_DEG;
+    const dLng = (b.lng - a.lng) * MI_PER_DEG
+      * Math.cos(((a.lat + b.lat) / 2) * Math.PI / 180);
+    return Math.hypot(dLat, dLng);
+  }
+
+  /**
+   * Hide-zone ring in the same planar metric used for elimination tests.
+   * Vertices sit on the circumscribed circle so the drawn polygon never reads
+   * smaller than the real radius, however few steps it uses.
+   */
+  function circleRing(lng, lat, radiusMi, steps) {
+    const kx = MI_PER_DEG * Math.cos(lat * Math.PI / 180);
+    const r = radiusMi / Math.cos(Math.PI / steps);
+    const ring = [];
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      ring.push([
+        lng + (r * Math.cos(a)) / kx,
+        lat + (r * Math.sin(a)) / MI_PER_DEG,
+      ]);
+    }
+    ring.push(ring[0]);
+    return ring;
+  }
+
+  function stationCircle(st, steps) {
+    return {
+      type: 'Feature',
+      properties: {},
+      geometry: {
+        type: 'Polygon',
+        coordinates: [circleRing(st.lng, st.lat, hideRadiusMi, steps || 64)],
+      },
+    };
   }
 
   function radiusMiles(q) {
@@ -136,37 +181,110 @@
     return { airport: best, miles: bestD };
   }
 
-  function hideZoneFeature(st, steps = 32) {
-    return turf.circle([st.lng, st.lat], hideRadiusMi, { steps, units: 'miles' });
+  const NJ_BOX = [-74.35, 40.55, -73.85, 41.05];
+  const NJ_BOX_RING = [
+    [NJ_BOX[0], NJ_BOX[1]], [NJ_BOX[2], NJ_BOX[1]], [NJ_BOX[2], NJ_BOX[3]],
+    [NJ_BOX[0], NJ_BOX[3]], [NJ_BOX[0], NJ_BOX[1]],
+  ];
+
+  const boroughIndexCache = {};
+  const boroughEdgeCache = {};
+  let jerseyPoly = null;
+
+  function simplifiedRings(poly, tolerance) {
+    if (!poly) return [];
+    let simple = poly;
+    try {
+      simple = turf.simplify(poly, { tolerance, highQuality: false });
+    } catch (_) { simple = poly; }
+    const rings = Geo().flattenRings(simple);
+    return rings.length ? rings : Geo().flattenRings(poly);
   }
 
-  function circleReachesPoly(st, poly) {
-    if (!poly) return false;
+  const boroughMaskCache = {};
+
+  /**
+   * Jersey is the NJ box minus the five boroughs — only built when a mask needs it.
+   * Outlines are coarse on purpose: this feeds the gray overlay, while station
+   * elimination uses the precise per-station edge distances.
+   */
+  function boroughPoly(name) {
+    if (name !== 'Jersey') {
+      if (boroughMaskCache[name] !== undefined) return boroughMaskCache[name];
+      const poly = boroughPolys[name] || null;
+      let mask = poly;
+      if (poly) {
+        try { mask = turf.simplify(poly, { tolerance: 0.0008, highQuality: false }); } catch (_) { mask = poly; }
+      }
+      boroughMaskCache[name] = mask;
+      return mask;
+    }
+    if (jerseyPoly) return jerseyPoly;
+    const njBox = turf.bboxPolygon(NJ_BOX);
+    const polys = Object.values(boroughPolys);
+    if (!polys.length) return njBox;
     try {
-      return turf.booleanIntersects(hideZoneFeature(st, 24), poly);
-    } catch (_) { return false; }
+      // Coarse outlines keep the union cheap; the mask is only a visual guide.
+      const coarse = polys.map(p => {
+        try { return turf.simplify(p, { tolerance: 0.001, highQuality: false }); } catch (_) { return p; }
+      });
+      jerseyPoly = turf.difference(turf.featureCollection([njBox, Geo().unionMany(coarse)])) || njBox;
+    } catch (_) {
+      jerseyPoly = njBox;
+    }
+    return jerseyPoly;
   }
 
-  function circleFullyInsidePoly(st, poly) {
-    if (!poly) return false;
-    try {
-      return turf.booleanContains(poly, hideZoneFeature(st, 24));
-    } catch (_) { return false; }
+  function boroughIndex(name) {
+    if (boroughIndexCache[name] !== undefined) return boroughIndexCache[name];
+    let rings;
+    if (name === 'Jersey') {
+      // Jersey's edge is the NJ box plus every borough outline, so skip the union.
+      rings = [NJ_BOX_RING];
+      for (const poly of Object.values(boroughPolys)) {
+        rings = rings.concat(simplifiedRings(poly, 0.00005));
+      }
+    } else {
+      rings = simplifiedRings(boroughPolys[name], 0.00005);
+    }
+    const index = rings.length ? Geo().buildSegmentIndex(rings, 0.02) : null;
+    boroughIndexCache[name] = index;
+    return index;
   }
 
-  function thermoStraddles(st, q) {
-    const region = Geo().thermometerRegion(q, true);
-    const anti = Geo().thermometerRegion(q, false);
-    const hz = hideZoneFeature(st, 24);
-    try {
-      return turf.booleanIntersects(hz, region) && turf.booleanIntersects(hz, anti);
-    } catch (_) { return true; }
+  /**
+   * Distance in miles from every station to a borough boundary. Computed once
+   * per borough so the per-station tests stay O(1) while panning.
+   */
+  function boroughEdgeDistances(name) {
+    const cached = boroughEdgeCache[name];
+    if (cached && cached.length === stations.length) return cached;
+    const index = boroughIndex(name);
+    if (!index) return null;
+    const out = new Float64Array(stations.length);
+    for (let i = 0; i < stations.length; i++) {
+      out[i] = Geo().minDistanceIndexedMi(index, stations[i].lng, stations[i].lat);
+    }
+    boroughEdgeCache[name] = out;
+    return out;
   }
 
-  function hideZoneMeetsThermoSide(st, q, warmerSide) {
-    try {
-      return turf.booleanIntersects(hideZoneFeature(st, 24), Geo().thermometerRegion(q, warmerSide));
-    } catch (_) { return true; }
+  let coastDistCache = null;
+
+  /**
+   * Coastline distance for every station, built on first use. Precomputing this
+   * at load cost ~180 ms even when no coastline question existed.
+   */
+  function coastDistances() {
+    if (coastDistCache && coastDistCache.length === stations.length) return coastDistCache;
+    if (!coastFeature || !stations.length) return null;
+    const index = coastlineIndex();
+    const out = new Float64Array(stations.length);
+    for (let i = 0; i < stations.length; i++) {
+      out[i] = Geo().minDistanceIndexedMi(index, stations[i].lng, stations[i].lat);
+    }
+    coastDistCache = out;
+    return out;
   }
 
   function possibleAirportIds(st) {
@@ -184,38 +302,38 @@
     return out;
   }
 
+  /**
+   * A station survives unless its entire hide zone falls outside the answer's
+   * allowed region. Every test is closed-form so 2400 stations stay cheap.
+   */
   function stationPassesQuestion(st, q) {
     if (q.answer == null) return true;
+    const h = hideRadiusMi;
+    const eps = 1e-9;
+
     if (q.type === 'radius') {
       if (q.lat == null || q.lng == null) return true;
       const r = radiusMiles(q);
-      const disk = turf.circle([q.lng, q.lat], r, { steps: 64, units: 'miles' });
-      const hz = hideZoneFeature(st, 32);
-      try {
-        if (q.answer === 'within') return turf.booleanIntersects(hz, disk);
-        return !turf.booleanContains(disk, hz);
-      } catch (_) {
-        const d = distMi(st, { lat: q.lat, lng: q.lng });
-        const h = hideRadiusMi;
-        if (q.answer === 'within') return d - h <= r + 1e-9;
-        return d + h > r + 1e-9;
-      }
+      const d = distMi(st, { lat: q.lat, lng: q.lng });
+      if (q.answer === 'within') return d - h <= r + eps;
+      return d + h > r + eps;
     }
+
     if (q.type === 'thermometer') {
       if (q.latA == null || q.latB == null) return true;
-      if (thermoStraddles(st, q)) return true;
-      return hideZoneMeetsThermoSide(st, q, q.answer === 'warmer');
+      const x = Geo().thermometerSignedMiles(q, st.lng, st.lat);
+      return q.answer === 'warmer' ? x > -h - eps : x < h + eps;
     }
+
     if (q.type === 'borough') {
-      const poly = boroughPolys[q.borough];
-      if (!poly) return true;
-      if (q.answer === 'same') {
-        if (st.borough === q.borough) return true;
-        return circleReachesPoly(st, poly);
-      }
-      if (st.borough !== q.borough) return true;
-      return !circleFullyInsidePoly(st, poly);
+      const edges = boroughEdgeDistances(q.borough);
+      if (!edges) return true;
+      const inside = st.borough === q.borough;
+      const edge = edges[st.idx];
+      if (q.answer === 'same') return inside || edge <= h + eps;
+      return !inside || edge < h - eps;
     }
+
     if (q.type === 'airport') {
       if (q.lat == null) return true;
       const seeker = nearestAirport({ lat: q.lat, lng: q.lng }).airport;
@@ -224,28 +342,52 @@
       if (q.answer === 'same') return possible.includes(seeker.id);
       return possible.some(id => id !== seeker.id);
     }
+
     if (q.type === 'coastline') {
       if (q.lat == null || !coastFeature) return true;
       const measure = distToCoast(q.lat, q.lng);
-      const hz = hideZoneFeature(st, 24);
-      try {
-        const band = turf.buffer(coastFeature, measure, { units: 'miles', steps: 16 });
-        if (!band) return true;
-        if (q.answer === 'closer') return turf.booleanIntersects(hz, band);
-        return !turf.booleanContains(band, hz);
-      } catch (_) {
-        const d = st.coastMi != null ? st.coastMi : distToCoast(st.lat, st.lng);
-        if (q.answer === 'closer') return d - hideRadiusMi <= measure + 1e-9;
-        return d + hideRadiusMi >= measure - 1e-9;
-      }
+      const dists = coastDistances();
+      const d = dists ? dists[st.idx] : distToCoast(st.lat, st.lng);
+      if (q.answer === 'closer') return d - h <= measure + eps;
+      return d + h >= measure - eps;
     }
+
     return true;
   }
 
+  function answeredKey() {
+    const parts = [hideRadiusMi.toFixed(4), stations.length];
+    for (const q of questions) {
+      if (q.answer == null) continue;
+      parts.push([
+        q.id, q.type, q.answer, q.lat, q.lng, q.latA, q.lngA,
+        q.latB, q.lngB, q.radius, q.unit, q.borough,
+      ].join(','));
+    }
+    return parts.join('|');
+  }
+
+  let activeCache = { key: null, list: null };
+
   function getActiveStations() {
+    const key = answeredKey();
+    if (activeCache.key === key && activeCache.list) return activeCache.list;
     const locked = questions.filter(q => q.answer != null);
-    if (!locked.length) return stations.slice();
-    return stations.filter(st => locked.every(q => stationPassesQuestion(st, q)));
+    let list;
+    if (!locked.length) {
+      list = stations.slice();
+    } else {
+      list = [];
+      for (const st of stations) {
+        let ok = true;
+        for (const q of locked) {
+          if (!stationPassesQuestion(st, q)) { ok = false; break; }
+        }
+        if (ok) list.push(st);
+      }
+    }
+    activeCache = { key, list };
+    return list;
   }
 
   function activeStationFeatures(activeSet) {
@@ -260,97 +402,150 @@
     }));
   }
 
-  function overlapZonesGeoJSON(activeSet) {
-    return {
-      type: 'FeatureCollection',
-      features: activeSet.map(st => {
-        const c = stationCircle(st);
-        c.properties = { id: st.id, name: st.name };
-        return c;
-      }),
-    };
+  const EMPTY_FC = { type: 'FeatureCollection', features: [] };
+  /** Above this many visible zones the union is too slow for phones. */
+  const MERGE_LIMIT = 700;
+
+  function visibleStations(list, bbox) {
+    if (!bbox || !list) return list || [];
+    const padLat = (hideRadiusMi / MI_PER_DEG) * 1.25;
+    const padLng = padLat / Math.max(0.2, Math.cos(((bbox[1] + bbox[3]) / 2) * Math.PI / 180));
+    const out = [];
+    for (const s of list) {
+      if (s.lng >= bbox[0] - padLng && s.lng <= bbox[2] + padLng
+        && s.lat >= bbox[1] - padLat && s.lat <= bbox[3] + padLat) out.push(s);
+    }
+    return out;
   }
+
+  function zoneSteps(count) {
+    if (count > 900) return 10;
+    if (count > 400) return 14;
+    if (count > 150) return 20;
+    return 28;
+  }
+
+  function overlapZonesGeoJSON(activeSet, bbox) {
+    const list = visibleStations(activeSet, bbox);
+    if (!list.length) return EMPTY_FC;
+    const steps = zoneSteps(list.length);
+    const features = new Array(list.length);
+    for (let i = 0; i < list.length; i++) {
+      const st = list[i];
+      features[i] = {
+        type: 'Feature',
+        properties: { id: st.id, name: st.name },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [circleRing(st.lng, st.lat, hideRadiusMi, steps)],
+        },
+      };
+    }
+    return { type: 'FeatureCollection', features };
+  }
+
+  let mergedCache = { key: null, data: null };
 
   function mergedZonesGeoJSON(activeStations, bbox) {
-    const empty = { type: 'FeatureCollection', features: [] };
-    let list = activeStations;
-    if (bbox) {
-      // bbox is degrees; convert hide radius from miles to degrees for padding
-      const pad = (hideRadiusMi / 69) * 1.15;
-      list = activeStations.filter(s =>
-        s.lng >= bbox[0] - pad && s.lat >= bbox[1] - pad &&
-        s.lng <= bbox[2] + pad && s.lat <= bbox[3] + pad);
+    const list = visibleStations(activeStations, bbox);
+    if (!list.length) return EMPTY_FC;
+
+    const key = `${answeredKey()}|${list.length}|${bbox ? bbox.map(v => v.toFixed(3)).join(',') : ''}`;
+    if (mergedCache.key === key && mergedCache.data) return mergedCache.data;
+
+    let data = null;
+    if (list.length <= MERGE_LIMIT) {
+      try {
+        const mp = turf.multiPoint(list.map(s => [s.lng, s.lat]));
+        const steps = zoneSteps(list.length);
+        // buffer() inscribes its arcs, so grow the radius to keep the true circle covered.
+        const merged = turf.buffer(mp, hideRadiusMi / Math.cos(Math.PI / (4 * steps)), {
+          units: 'miles', steps,
+        });
+        if (merged?.geometry?.coordinates?.length) {
+          merged.properties = { kind: 'merged-zones' };
+          data = { type: 'FeatureCollection', features: [merged] };
+        }
+      } catch (_) { data = null; }
     }
-    if (!list.length) return empty;
+    // Too many zones to union quickly — overlapping circles read the same at this zoom.
+    if (!data) data = overlapZonesGeoJSON(list, null);
 
-    const steps = list.length > 400 ? 8 : list.length > 150 ? 12 : 16;
-
-    try {
-      const mp = turf.multiPoint(list.map(s => [s.lng, s.lat]));
-      const merged = turf.buffer(mp, hideRadiusMi, { units: 'miles', steps });
-      if (merged?.geometry?.coordinates?.length) {
-        merged.properties = { kind: 'merged-zones' };
-        return { type: 'FeatureCollection', features: [merged] };
-      }
-    } catch (_) { /* fall through */ }
-
-    try {
-      const circles = list.map(s => stationCircle(s));
-      const merged = Geo().unionMany(circles);
-      if (merged?.geometry?.coordinates?.length) {
-        merged.properties = { kind: 'merged-zones' };
-        return { type: 'FeatureCollection', features: [merged] };
-      }
-    } catch (_) { /* fall through */ }
-
-    return overlapZonesGeoJSON(list);
+    mergedCache = { key, data };
+    return data;
   }
+
+  let coastBufferCache = { key: null, buf: null };
+
+  function coastBand(measure) {
+    const key = measure.toFixed(3);
+    if (coastBufferCache.key === key) return coastBufferCache.buf;
+    let buf = null;
+    try {
+      buf = turf.buffer(coastMask || coastFeature, measure, { units: 'miles', steps: 6 });
+    } catch (_) { buf = null; }
+    coastBufferCache = { key, buf };
+    return buf;
+  }
+
+  let areaCache = { key: null, area: null };
 
   function possibleAreaFromQuestions() {
     const qs = questions.filter(q => q.answer != null);
     if (!qs.length) return null;
+
+    const key = answeredKey();
+    if (areaCache.key === key) return areaCache.area;
+
     let area = Geo().WORLD;
     for (const q of qs) {
       if (q.type === 'radius' && q.lat != null && q.lng != null) {
         const r = radiusMiles(q);
-        const c = turf.circle([q.lng, q.lat], r, { steps: 64, units: 'miles' });
+        const c = turf.circle([q.lng, q.lat], r, { steps: 48, units: 'miles' });
         area = Geo().modifyMapData(area, c, q.answer === 'within');
       } else if (q.type === 'thermometer' && q.latA != null && q.latB != null) {
         area = Geo().modifyMapData(area, Geo().thermometerRegion(q, q.answer === 'warmer'), true);
       } else if (q.type === 'borough') {
-        const poly = boroughPolys[q.borough];
+        const poly = boroughPoly(q.borough);
         if (poly) area = Geo().modifyMapData(area, poly, q.answer === 'same');
       } else if (q.type === 'airport' && q.lat != null) {
         const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, AIRPORTS);
         if (cell) area = Geo().modifyMapData(area, cell, q.answer === 'same');
       } else if (q.type === 'coastline' && q.lat != null && coastFeature) {
-        const measure = distToCoast(q.lat, q.lng);
-        try {
-          if (q.answer === 'closer') {
-            const buf = turf.buffer(coastFeature, measure, { units: 'miles', steps: 16 });
-            if (buf) area = Geo().modifyMapData(area, buf, true);
-          } else {
-            const buf = turf.buffer(coastFeature, measure, { units: 'miles', steps: 16 });
-            if (buf) area = Geo().modifyMapData(area, buf, false);
-          }
-        } catch (_) { /* skip coastline mask */ }
+        const band = coastBand(distToCoast(q.lat, q.lng));
+        if (band) area = Geo().modifyMapData(area, band, q.answer === 'closer');
       }
     }
+
+    areaCache = { key, area };
     return area;
   }
 
-  function eliminatedMask() {
+  let maskCache = { key: null, mask: null, border: null };
+
+  function ensureMaskCache() {
+    const key = answeredKey();
+    if (maskCache.key === key) return maskCache;
     const possible = possibleAreaFromQuestions();
-    if (!possible) return { type: 'FeatureCollection', features: [] };
-    return Geo().holedMask(possible);
+    if (!possible) {
+      maskCache = { key, mask: EMPTY_FC, border: EMPTY_FC };
+      return maskCache;
+    }
+    const f = Geo().safePoly(possible);
+    maskCache = {
+      key,
+      mask: Geo().holedMask(possible),
+      border: f ? { type: 'FeatureCollection', features: [f] } : EMPTY_FC,
+    };
+    return maskCache;
+  }
+
+  function eliminatedMask() {
+    return ensureMaskCache().mask;
   }
 
   function possibleAreaGeoJSON() {
-    const possible = possibleAreaFromQuestions();
-    if (!possible) return { type: 'FeatureCollection', features: [] };
-    const f = Geo().safePoly(possible);
-    if (!f) return { type: 'FeatureCollection', features: [] };
-    return { type: 'FeatureCollection', features: [f] };
+    return ensureMaskCache().border;
   }
 
   function questionsGeoJSON() {
@@ -725,38 +920,49 @@
     try {
       if (boro) {
         for (const f of boro.features) boroughPolys[f.properties.BoroName] = f;
-        const union = Geo().unionMany(boro.features);
-        const njBox = turf.bboxPolygon([-74.35, 40.55, -73.85, 41.05]);
-        try {
-          boroughPolys.Jersey = turf.difference(turf.featureCollection([njBox, union])) || njBox;
-        } catch (_) {
-          boroughPolys.Jersey = njBox;
-        }
       }
     } catch (e) {
       console.warn('borough load failed', e);
     }
     try {
       coastFeature = coast?.features?.[0] || null;
+      coastIndex = null;
+      coastDistCache = null;
+      if (coastFeature) {
+        try {
+          coastSimple = turf.simplify(coastFeature, { tolerance: 0.0003, highQuality: false });
+        } catch (_) { coastSimple = coastFeature; }
+        // The gray mask only needs a rough band, and buffering full detail is slow.
+        try {
+          coastMask = turf.simplify(coastFeature, { tolerance: 0.008, highQuality: false });
+        } catch (_) { coastMask = coastSimple; }
+      }
     } catch (e) {
       console.warn('coastline load failed', e);
     }
+
+    // Bounding boxes let most stations skip the polygon test, and a light simplify
+    // makes the remaining tests ~6x cheaper without changing any assignment.
+    const boroBoxes = Object.entries(boroughPolys).map(([name, poly]) => {
+      let hit = poly;
+      try { hit = turf.simplify(poly, { tolerance: 0.0002, highQuality: false }); } catch (_) { hit = poly; }
+      return { name, poly: hit, box: turf.bbox(poly) };
+    });
 
     stations = (geojson.features || []).map((f, i) => {
       const [lng, lat] = f.geometry.coordinates;
       let borough = f.properties.borough || 'Jersey';
       if (!f.properties.borough) {
-        const pt = turf.point([lng, lat]);
-        for (const [name, poly] of Object.entries(boroughPolys)) {
-          if (name === 'Jersey') continue;
-          if (turf.booleanPointInPolygon(pt, poly)) { borough = name; break; }
+        for (const b of boroBoxes) {
+          if (lng < b.box[0] || lng > b.box[2] || lat < b.box[1] || lat > b.box[3]) continue;
+          if (turf.booleanPointInPolygon([lng, lat], b.poly)) { borough = b.name; break; }
         }
       }
       return {
+        idx: i,
         id: f.properties.station_id || `${lng.toFixed(6)}_${lat.toFixed(6)}_${i}`,
         name: f.properties.name || `Station ${i}`,
         lng, lat, borough,
-        coastMi: distToCoast(lat, lng),
       };
     });
   }
@@ -771,11 +977,14 @@
       if (!confirm('Remove all questions?')) return;
       questions = []; save(); notifyChange(); renderList();
     });
+    let radiusTimer = null;
     document.getElementById('cb-hide-radius')?.addEventListener('input', e => {
       hideRadiusMi = Math.max(0.05, parseFloat(e.target.value) || 0.2);
       const lbl = document.getElementById('cb-hide-radius-label');
       if (lbl) lbl.textContent = `${hideRadiusMi.toFixed(2)} mi`;
-      notifyChange();
+      // The radius invalidates every cache, so redraw once the drag settles.
+      clearTimeout(radiusTimer);
+      radiusTimer = setTimeout(notifyChange, 130);
     });
   }
 
