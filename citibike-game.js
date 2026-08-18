@@ -395,10 +395,12 @@
   }
 
   /**
-   * Borough land plus adjacent water, clipped to the playable outline and cut
-   * off where that water meets another borough's land.
+   * Borough land plus only the water that belongs to it:
+   * - channels: fill to the opposite borough's land and stop there
+   * - open sea: stop at this borough's sea/playable edge, not a wide buffer
    */
-  const BOROUGH_WATER_MI = 2;
+  const BOROUGH_CHANNEL_MI = 2.5;
+  const BOROUGH_SEA_MI = 0.35;
 
   function boroughWithWater(name) {
     if (boroughWaterCache[name] !== undefined) return boroughWaterCache[name];
@@ -408,20 +410,43 @@
       return null;
     }
     const play = playableStart();
+    const other = landExcept(name);
     let region = land;
     try {
-      const padded = turf.buffer(land, BOROUGH_WATER_MI, { units: 'miles', steps: 12 });
-      if (padded) region = padded;
-    } catch (_) { /* keep land */ }
+      const seaPad = turf.buffer(land, BOROUGH_SEA_MI, { units: 'miles', steps: 12 });
+      let sea = seaPad || land;
+      if (play) {
+        const clipped = Geo().intersect(sea, play);
+        if (clipped) sea = clipped;
+      }
+      if (other) {
+        try { sea = turf.difference(turf.featureCollection([sea, other])) || sea; } catch (_) { /* keep */ }
+      }
+      region = Geo().unionMany([land, sea].filter(Boolean)) || land;
+
+      if (other) {
+        const nearThis = turf.buffer(land, BOROUGH_CHANNEL_MI, { units: 'miles', steps: 12 });
+        const nearOther = turf.buffer(other, BOROUGH_CHANNEL_MI, { units: 'miles', steps: 8 });
+        let channel = nearThis && nearOther ? Geo().intersect(nearThis, nearOther) : null;
+        if (channel && play) {
+          const clipped = Geo().intersect(channel, play);
+          if (clipped) channel = clipped;
+        }
+        if (channel && other) {
+          try {
+            channel = turf.difference(turf.featureCollection([channel, other])) || channel;
+          } catch (_) { /* keep */ }
+        }
+        if (channel && !emptyGeom(channel)) {
+          region = Geo().unionMany([region, channel]) || region;
+        }
+      }
+    } catch (_) {
+      region = land;
+    }
     if (play) {
       const clipped = Geo().intersect(region, play);
       if (clipped && !emptyGeom(clipped)) region = clipped;
-    }
-    const other = landExcept(name);
-    if (other) {
-      try {
-        region = turf.difference(turf.featureCollection([region, other])) || region;
-      } catch (_) { /* keep */ }
     }
     boroughWaterCache[name] = region;
     return region;
