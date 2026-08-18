@@ -10,15 +10,27 @@
 <script src="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
 <style>
-  :root { --panel: rgba(255,248,236,.96); --text:#2a2418; --border:#e8c878; --accent:#ffb020; --bike:#003DA5; }
-  body.dark { --panel: rgba(20,24,32,.94); --text:#f5f0e6; --border:#ffb020; --accent:#ffc848; }
+  :root { --panel: rgba(255,248,236,.97); --text:#2a2418; --border:#e8c878; --accent:#ffb020; --bike:#003DA5; --muted:#7a7264; }
+  body.dark { --panel: rgba(20,24,32,.96); --text:#f5f0e6; --border:#ffb020; --accent:#ffc848; --muted:#c4bba8; }
   html,body { margin:0; height:100%; font-family:-apple-system,Helvetica Neue,Helvetica,Arial,sans-serif; touch-action:manipulation; }
   #map { position:absolute; inset:0; }
+  .map-switch {
+    position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:3; display:flex; gap:0;
+    background:var(--panel); border:2px solid var(--border); border-radius:10px; overflow:hidden;
+    box-shadow:0 6px 20px rgba(0,0,0,.18);
+  }
+  .map-switch a {
+    padding:9px 12px; font-size:12px; font-weight:700; text-decoration:none; color:var(--text);
+    letter-spacing:.02em;
+  }
+  .map-switch a.current { background:var(--bike); color:#fff; }
+  body.dark .map-switch a.current { background:var(--accent); color:#1a1408; }
+
   .panel {
     position:absolute; top:12px; left:12px; z-index:2; background:var(--panel); color:var(--text);
     border:2px solid var(--border); border-radius:12px; padding:0;
     box-shadow:0 6px 24px rgba(0,0,0,.2); backdrop-filter:blur(8px);
-    width:min(340px, calc(100vw - 24px)); max-height:calc(100vh - 24px);
+    width:min(360px, calc(100vw - 24px)); max-height:calc(100vh - 24px);
     overflow:hidden; display:flex; flex-direction:column;
   }
   .panel-head {
@@ -29,52 +41,81 @@
   .panel-toggle { border:none; background:transparent; color:var(--text); font-size:18px; line-height:1; padding:4px 6px; cursor:pointer; }
   .panel.collapsed .panel-body { display:none; }
   .panel.collapsed .panel-head { border-bottom:none; }
-  .panel-body { padding:12px 14px; overflow-y:auto; -webkit-overflow-scrolling:touch; }
-  .sub { font-size:11px; opacity:.75; margin:0 0 10px; line-height:1.35; }
-  .status { font-size:12px; font-weight:600; color:var(--bike); margin:0 0 8px; }
+  .panel-body { padding:12px 14px 16px; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  .sub { font-size:11px; color:var(--muted); margin:0 0 10px; line-height:1.4; }
+  .status { font-size:12px; font-weight:700; color:var(--bike); margin:0 0 8px; }
   body.dark .status { color:var(--accent); }
-  .seg { display:flex; gap:6px; margin:4px 0 10px; flex-wrap:wrap; }
+  .section { font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin:14px 0 8px; opacity:.7; }
+  .seg { display:flex; gap:4px; margin:4px 0 10px; }
   .seg button {
-    flex:1; min-width:70px; font-size:12px; padding:8px 0; border:1px solid var(--border); background:transparent;
+    flex:1; font-size:12px; padding:9px 6px; border:1px solid var(--border); background:transparent;
     color:var(--text); border-radius:8px; cursor:pointer;
   }
-  .seg button.active { background:var(--accent); color:#1a1408; border-color:var(--accent); font-weight:600; }
+  .seg button.active { background:var(--accent); color:#1a1408; border-color:var(--accent); font-weight:700; }
   .row { display:flex; align-items:center; gap:8px; font-size:13px; padding:6px 0; cursor:pointer; min-height:32px; }
   .row input { accent-color:var(--accent); width:18px; height:18px; flex:0 0 auto; }
-  hr { border:none; border-top:1px solid var(--border); margin:10px 0; }
+  hr { border:none; border-top:1px solid var(--border); margin:12px 0; }
   label { font-size:12px; font-weight:600; display:block; margin:8px 0 4px; }
-  .game-field input, .game-field select, .game-field textarea,
-  .hide-station-field input, .game-row input, .game-row select {
+  input, select, textarea {
     font-size:16px; padding:8px 10px; border:1px solid var(--border); border-radius:8px;
-    background:transparent; color:var(--text); box-sizing:border-box; width:100%;
+    background:transparent; color:var(--text); box-sizing:border-box; width:100%; font-family:inherit;
   }
+  textarea { resize:vertical; min-height:44px; }
   .game-row { display:flex; gap:6px; align-items:center; }
   .game-row input[type="range"] { flex:1; accent-color:var(--accent); }
-  .game-row input, .game-row select { width:auto; flex:1; }
   .game-btn {
     font-size:13px; padding:10px 12px; border:1px solid var(--border); border-radius:8px;
-    background:var(--accent); color:#1a1408; font-weight:600; cursor:pointer; width:100%; margin-top:4px;
+    background:var(--accent); color:#1a1408; font-weight:700; cursor:pointer; width:100%; margin-top:6px;
   }
-  .game-btn.secondary { background:transparent; color:var(--text); font-weight:500; }
-  .game-btn.small { width:auto; padding:8px 10px; font-size:12px; margin-top:0; }
-  .hide-actions { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
-  .game-hint { font-size:11px; opacity:.8; margin:6px 0 0; line-height:1.35; }
-  .game-item { border:1px solid var(--border); border-radius:8px; padding:8px; margin:6px 0; font-size:12px; }
-  .game-item-head { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
-  .game-dot { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
-  .game-rm { margin-left:auto; border:none; background:transparent; color:var(--text); cursor:pointer; font-size:20px; line-height:1; padding:4px; }
-  .nav-link { font-size:12px; color:var(--text); opacity:.8; }
-  .mapboxgl-popup-content { font-size:13px; font-weight:600; padding:8px 12px; border-radius:8px; max-width:240px; }
-  .mapboxgl-ctrl-top-right { top:12px; right:12px; }
+  .game-btn.secondary { background:transparent; color:var(--text); font-weight:600; }
+  .game-btn.small { width:auto; padding:7px 10px; font-size:12px; margin-top:0; }
+  .hide-actions, .q-tools { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
+  .game-hint { font-size:11px; color:var(--muted); margin:6px 0 0; line-height:1.4; }
+  .add-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:8px 0; }
+  .cb-item {
+    border:1px solid var(--border); border-radius:10px; margin:8px 0; background:rgba(255,255,255,.28);
+  }
+  body.dark .cb-item { background:rgba(255,255,255,.04); }
+  .cb-item-head {
+    display:flex; align-items:center; gap:6px; padding:8px 8px 8px 10px; cursor:pointer; user-select:none;
+  }
+  .cb-item.collapsed .cb-item-body { display:none; }
+  .cb-dot { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
+  .cb-item-head strong { font-size:12px; flex:1; }
+  .icon-btn {
+    border:none; background:transparent; color:var(--text); cursor:pointer; font-size:16px;
+    width:28px; height:28px; border-radius:6px; line-height:1;
+  }
+  .icon-btn:hover { background:rgba(0,0,0,.06); }
+  .cb-item-body { padding:0 10px 10px; font-size:12px; }
+  .live-banner {
+    display:none; position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:3;
+    background:var(--panel); border:2px solid var(--border); border-radius:999px; padding:8px 14px;
+    font-size:13px; font-weight:700; box-shadow:0 6px 20px rgba(0,0,0,.18); white-space:nowrap;
+  }
+  .live-banner.show { display:block; }
+  .live-banner.in { color:#157347; }
+  .live-banner.out { color:#b42318; }
+  .marker-label {
+    font-size:11px; font-weight:700; background:#fff; border:2px solid currentColor; border-radius:999px;
+    padding:2px 7px; box-shadow:0 2px 8px rgba(0,0,0,.2);
+  }
   @media (max-width: 768px) {
-    .panel { top:8px; left:8px; right:8px; width:auto; max-height:calc(100dvh - 16px); }
-    .mapboxgl-ctrl-top-right { top:auto; bottom:12px; right:8px; }
+    .map-switch { top:auto; bottom:12px; left:50%; right:auto; transform:translateX(-50%); }
+    .panel { top:8px; left:8px; right:8px; width:auto; max-height:calc(100dvh - 72px); }
+    .mapboxgl-ctrl-top-right { top:auto !important; bottom:56px !important; right:8px !important; }
     .mapboxgl-ctrl-group button { width:36px; height:36px; }
+    .live-banner { bottom:64px; }
   }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<nav class="map-switch" aria-label="Map mode">
+  <a href="index.html">Transit</a>
+  <a href="citibike.html" class="current">Citi Bike</a>
+</nav>
+<div id="cb-live-banner" class="live-banner"></div>
 <div id="panel" class="panel">
   <div class="panel-head" id="panel-head">
     <h1>Citi Bike Hide + Seek</h1>
@@ -82,46 +123,56 @@
   </div>
   <div class="panel-body">
     <p class="status" id="cb-status">Loading map…</p>
-    <p class="sub" id="cb-focus-info">Tap a station pin to focus its hide zone.</p>
-    <p class="sub"><a class="nav-link" href="index.html">← Transit hide + seek map</a></p>
+    <p class="sub" id="cb-focus-info">Tap a station to isolate its hide circle. Double-tap outside that circle to unselect.</p>
 
+    <div class="section">Map</div>
     <div class="seg" id="cb-theme">
       <button type="button" data-style="light" class="active">Light</button>
       <button type="button" data-style="dark">Dark</button>
     </div>
+    <label class="row"><input type="checkbox" id="cb-toggle-transit" /> Subtle transit layer</label>
+    <label class="row"><input type="checkbox" id="cb-live-endgame" /> Live location (endgame)</label>
+    <p class="game-hint">Endgame tracking shows whether you are inside or outside the selected station’s hide zone.</p>
 
+    <div class="section">Hide zones</div>
     <label>Hide radius</label>
     <div class="game-row">
       <input id="cb-hide-radius" type="range" min="0.05" max="0.5" step="0.01" value="0.20" />
-      <span id="cb-hide-radius-label" style="font-size:12px;font-weight:600;min-width:52px">0.20 mi</span>
+      <span id="cb-hide-radius-label" style="font-size:12px;font-weight:700;min-width:52px">0.20 mi</span>
     </div>
-    <label class="row"><input type="checkbox" id="cb-toggle-zones" checked /> Show merged hide zones</label>
-
+    <label>Zone drawing</label>
+    <div class="seg" id="cb-zone-mode">
+      <button type="button" data-mode="off">Off</button>
+      <button type="button" data-mode="overlap" class="active">Overlap</button>
+      <button type="button" data-mode="merged">Merged</button>
+    </div>
     <div class="hide-station-field">
       <input type="text" id="cb-station-search" list="cb-station-list" placeholder="Find station…" autocomplete="off" />
       <datalist id="cb-station-list"></datalist>
     </div>
     <div class="hide-actions">
       <button type="button" class="game-btn small secondary" id="cb-find-station">Find</button>
-      <button type="button" class="game-btn small secondary" id="cb-clear-focus">Clear focus</button>
+      <button type="button" class="game-btn small secondary" id="cb-clear-focus">Unselect station</button>
     </div>
 
-    <hr />
-    <p class="sub">Stations stay if any part of their hide circle could still contain the hider. Paste Google or Apple Maps links, or lat/lng.</p>
-    <div class="game-row" style="flex-wrap:wrap">
-      <input id="cb-radius-val" type="number" step="any" value="1" min="0.01" inputmode="decimal" style="flex:1;min-width:70px" />
-      <select id="cb-radius-unit" style="flex:0 0 auto">
+    <div class="section">Questions</div>
+    <p class="sub">Paste a Maps link or coords, or use live location. Drag the pins on the map to adjust. Stations stay only if their hide circle could still contain the hider.</p>
+    <div class="game-row">
+      <input id="cb-radius-val" type="number" step="any" value="1" min="0.01" inputmode="decimal" />
+      <select id="cb-radius-unit">
         <option value="miles" selected>miles</option>
         <option value="kilometers">km</option>
       </select>
     </div>
-    <button type="button" class="game-btn" id="cb-add-radius">+ Radius</button>
-    <button type="button" class="game-btn secondary" id="cb-add-thermo">+ Thermometer</button>
-    <button type="button" class="game-btn secondary" id="cb-add-borough">+ Same borough</button>
-    <button type="button" class="game-btn secondary" id="cb-add-airport">+ Same commercial airport</button>
+    <div class="add-grid">
+      <button type="button" class="game-btn" id="cb-add-radius">+ Radius</button>
+      <button type="button" class="game-btn secondary" id="cb-add-thermo">+ Thermo</button>
+      <button type="button" class="game-btn secondary" id="cb-add-borough">+ Borough</button>
+      <button type="button" class="game-btn secondary" id="cb-add-airport">+ Airport</button>
+    </div>
     <div id="cb-game-list"></div>
     <button type="button" class="game-btn secondary" id="cb-clear-all">Clear all questions</button>
-    <p class="game-hint">Long-press the map to copy coordinates. Airports: Skyports, LaGuardia, Newark. Jersey counts as a borough.</p>
+    <p class="game-hint">Airports: NY Skyports Seaplane Base, LaGuardia, JFK. Jersey counts as a borough.</p>
   </div>
 </div>
 <script src="config.js"></script>

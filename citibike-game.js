@@ -2,12 +2,12 @@
 (function () {
   const Geo = () => window.JetLagGeo;
   const COLORS = ['#ffb020', '#4da3ff', '#6bcb77', '#ff6b9d', '#c084fc', '#f97316', '#14b8a6'];
-  const STORAGE_KEY = 'jetlagCitibikeQuestionsV1';
+  const STORAGE_KEY = 'jetlagCitibikeQuestionsV2';
   const BOROUGHS = ['Manhattan', 'Bronx', 'Brooklyn', 'Queens', 'Staten Island', 'Jersey'];
   const AIRPORTS = [
-    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.735772, lng: -73.972222 },
+    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7348, lng: -73.9726 },
     { id: 'lga', code: 'LGA', name: 'LaGuardia', lat: 40.7769, lng: -73.8740 },
-    { id: 'ewr', code: 'EWR', name: 'Newark', lat: 40.6895, lng: -74.1745 },
+    { id: 'jfk', code: 'JFK', name: 'JFK', lat: 40.6413, lng: -73.7781 },
   ];
 
   let colorIdx = 0;
@@ -15,8 +15,6 @@
   let hideRadiusMi = 0.2;
   let stations = [];
   let boroughPolys = {};
-  let boroughUnion = null;
-  let jerseyPoly = null;
   let onChange = null;
 
   function nextColor() {
@@ -30,37 +28,26 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) questions = JSON.parse(raw);
     } catch (_) { questions = []; }
+    questions.forEach(q => {
+      if (q.open == null) q.open = false;
+    });
   }
 
   function save() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(questions));
   }
 
-  /** Accept lat,lng, lng lat, Google/Apple Maps URLs, DMS-ish strings. */
   function parseCoord(text) {
     const s = (text || '').trim();
     if (!s) return null;
-
     const atMatch = s.match(/@(-?\d+\.?\d*),\s*(-?\d+\.?\d*)/);
     if (atMatch) return { lat: +atMatch[1], lng: +atMatch[2] };
-
     const qMatch = s.match(/[?&]q=(-?\d+\.?\d*)[,\s+]+(-?\d+\.?\d*)/i);
     if (qMatch) return { lat: +qMatch[1], lng: +qMatch[2] };
-
     const d3d4 = s.match(/!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)/i);
     if (d3d4) return { lat: +d3d4[1], lng: +d3d4[2] };
-
     const llMatch = s.match(/ll=(-?\d+\.?\d*)[,%2C\s]+(-?\d+\.?\d*)/i);
     if (llMatch) return { lat: +llMatch[1], lng: +llMatch[2] };
-
-    const labelMatch = s.match(/(-?\d+\.\d+)\s*°?\s*[NSns]\s*,?\s*(-?\d+\.\d+)\s*°?\s*[EWew]/);
-    if (labelMatch) {
-      let lat = +labelMatch[1], lng = +labelMatch[2];
-      if (/[Ss]/.test(s.split(',')[0])) lat = -Math.abs(lat);
-      if (/[Ww]/.test(s)) lng = -Math.abs(lng);
-      return { lat, lng };
-    }
-
     const nums = s.replace(/[^\d.\-+eE]/g, ' ').trim().split(/\s+/).map(Number).filter(n => !Number.isNaN(n));
     if (nums.length >= 2) {
       let a = nums[0], b = nums[1];
@@ -77,7 +64,7 @@
   }
 
   function stationCircle(st) {
-    return turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 48, units: 'miles' });
+    return turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 64, units: 'miles' });
   }
 
   function distMi(a, b) {
@@ -105,9 +92,7 @@
         turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 16, units: 'miles' }),
         poly,
       );
-    } catch (_) {
-      return false;
-    }
+    } catch (_) { return false; }
   }
 
   function circleFullyInsidePoly(st, poly) {
@@ -117,9 +102,7 @@
         poly,
         turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 16, units: 'miles' }),
       );
-    } catch (_) {
-      return false;
-    }
+    } catch (_) { return false; }
   }
 
   function thermoStraddles(st, q) {
@@ -133,8 +116,7 @@
     let diff = bearToSt - (bearing + 90);
     while (diff > 180) diff -= 360;
     while (diff < -180) diff += 360;
-    const distToLine = Math.abs(Math.sin(diff * Math.PI / 180) * distToMid);
-    return distToLine <= hideRadiusMi + 1e-6;
+    return Math.abs(Math.sin(diff * Math.PI / 180) * distToMid) <= hideRadiusMi + 1e-9;
   }
 
   function possibleAirportIds(st) {
@@ -153,13 +135,14 @@
   }
 
   function stationPassesQuestion(st, q) {
-    if (q.locked === false || q.answer == null) return true;
+    if (q.answer == null) return true;
     if (q.type === 'radius') {
-      if (q.lat == null) return true;
+      if (q.lat == null || q.lng == null) return true;
       const d = distMi(st, { lat: q.lat, lng: q.lng });
       const r = radiusMiles(q);
-      if (q.answer === 'within') return d <= r + hideRadiusMi;
-      return d + hideRadiusMi > r;
+      const cutoff = r + hideRadiusMi;
+      if (q.answer === 'within') return d <= cutoff + 1e-9;
+      return d + hideRadiusMi > r + 1e-9;
     }
     if (q.type === 'thermometer') {
       if (q.latA == null || q.latB == null) return true;
@@ -188,67 +171,83 @@
   }
 
   function getActiveStations() {
-    const locked = questions.filter(q => q.locked !== false && q.answer != null);
+    const locked = questions.filter(q => q.answer != null);
     if (!locked.length) return stations.slice();
     return stations.filter(st => locked.every(q => stationPassesQuestion(st, q)));
   }
 
   function activeStationFeatures(activeSet) {
-    const ids = activeSet ? new Set(activeSet.map(s => s.id)) : null;
     const meters = hideRadiusMi * 1609.344;
     const mPerPxZ20 = 40075016.686 / (256 * 2 ** 20);
-    return stations.map(st => ({
+    return activeSet.map(st => ({
       type: 'Feature',
       properties: {
         id: st.id,
         name: st.name,
         borough: st.borough,
-        active: ids ? (ids.has(st.id) ? 1 : 0) : 1,
         r20: meters / mPerPxZ20 / Math.cos(st.lat * Math.PI / 180),
       },
       geometry: { type: 'Point', coordinates: [st.lng, st.lat] },
     }));
   }
 
+  function mergedZonesGeoJSON(activeStations) {
+    const empty = { type: 'FeatureCollection', features: [] };
+    if (!activeStations.length) return empty;
+    const latCell = Math.max(hideRadiusMi / 34.5, 0.004);
+    const lngCell = Math.max(hideRadiusMi / 26, 0.004);
+    const groups = new Map();
+    for (const s of activeStations) {
+      const key = `${Math.floor(s.lat / latCell)}_${Math.floor(s.lng / lngCell)}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(s);
+    }
+    const features = [];
+    for (const group of groups.values()) {
+      let acc = null;
+      for (const s of group) {
+        const c = turf.circle([s.lng, s.lat], hideRadiusMi, { steps: 10, units: 'miles' });
+        if (!acc) { acc = c; continue; }
+        try {
+          acc = turf.union(turf.featureCollection([acc, c])) || acc;
+        } catch (_) { features.push(c); }
+      }
+      if (acc) features.push(acc);
+    }
+    return { type: 'FeatureCollection', features };
+  }
+
   function questionsGeoJSON() {
     const features = [];
     for (const q of questions) {
       if (q.type === 'radius' && q.lat != null) {
-        const circle = Geo().geodesicCircle(q.lng, q.lat, q.radius, q.unit || 'miles');
-        circle.properties = { kind: 'radius-fill', id: q.id, color: q.color, answer: q.answer };
+        const circle = turf.circle([q.lng, q.lat], radiusMiles(q), { steps: 96, units: 'miles' });
+        circle.properties = { kind: 'radius-line', id: q.id, color: q.color };
         features.push(circle);
-        features.push(turf.feature(turf.point([q.lng, q.lat]).geometry, {
-          kind: 'radius-center', id: q.id, color: q.color,
-        }));
       } else if (q.type === 'thermometer' && q.latA != null && q.latB != null) {
         features.push(turf.feature(turf.lineString([
           [q.lngA, q.latA], [q.lngB, q.latB],
         ]).geometry, { kind: 'thermo-line', id: q.id, color: q.color }));
-        if (q.answer != null) {
-          const region = Geo().thermometerRegion(q, q.answer === 'warmer');
-          region.properties = { kind: 'thermo-region', id: q.id, color: q.color };
-          features.push(region);
-        }
-        features.push(turf.feature(turf.point([q.lngA, q.latA]).geometry, {
-          kind: 'thermo-end', id: q.id, end: 'A', color: q.color,
-        }));
-        features.push(turf.feature(turf.point([q.lngB, q.latB]).geometry, {
-          kind: 'thermo-end', id: q.id, end: 'B', color: q.color,
-        }));
       } else if (q.type === 'airport' && q.lat != null) {
         for (const a of AIRPORTS) {
           features.push(turf.feature(turf.point([a.lng, a.lat]).geometry, {
             kind: 'airport', id: q.id, code: a.code, name: a.name, color: q.color,
           }));
         }
-        const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, AIRPORTS);
-        if (cell) {
-          cell.properties = { kind: 'airport-cell', id: q.id, color: q.color };
-          features.push(cell);
-        }
       }
     }
     return { type: 'FeatureCollection', features };
+  }
+
+  function questionTitle(q) {
+    if (q.type === 'radius') return `Radius · ${q.radius} ${q.unit || 'miles'}`;
+    if (q.type === 'thermometer') return 'Thermometer';
+    if (q.type === 'borough') return `Borough · ${q.borough || '?'}`;
+    return 'Nearest airport';
+  }
+
+  function liveBtn(id, field) {
+    return `<button type="button" class="game-btn small secondary q-live" data-id="${id}" data-field="${field}">Use my location</button>`;
   }
 
   function renderList() {
@@ -256,30 +255,46 @@
     if (!el) return;
     el.innerHTML = '';
     if (!questions.length) {
-      el.innerHTML = '<p class="cb-hint">Add questions below. Paste coords from Google or Apple Maps.</p>';
+      el.innerHTML = '<p class="game-hint">Add a question, then paste coords, use live location, or drag the pin.</p>';
       return;
     }
-    questions.forEach(q => {
+    questions.forEach((q, i) => {
       const div = document.createElement('div');
-      div.className = 'cb-item';
+      div.className = 'cb-item' + (q.open ? '' : ' collapsed');
       div.dataset.id = q.id;
-      const title = q.type === 'radius' ? `Radius · ${q.radius} ${q.unit || 'miles'}`
-        : q.type === 'thermometer' ? 'Thermometer'
-          : q.type === 'borough' ? `Same borough · ${q.borough || '?'}`
-            : 'Same commercial airport';
       div.innerHTML = `
         <div class="cb-item-head">
           <span class="cb-dot" style="background:${q.color}"></span>
-          <strong>${title}</strong>
-          <button type="button" class="cb-rm" data-id="${q.id}" aria-label="Remove">×</button>
+          <strong>${questionTitle(q)}</strong>
+          <button type="button" class="icon-btn q-up" data-id="${q.id}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
+          <button type="button" class="icon-btn q-down" data-id="${q.id}" ${i === questions.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button>
+          <button type="button" class="icon-btn q-toggle" data-id="${q.id}" aria-label="Collapse">${q.open ? '▾' : '▸'}</button>
+          <button type="button" class="icon-btn q-rm" data-id="${q.id}" aria-label="Remove">×</button>
         </div>
         <div class="cb-item-body">${renderQuestionFields(q)}</div>`;
       el.appendChild(div);
     });
-    el.querySelectorAll('.cb-rm').forEach(btn => {
-      btn.addEventListener('click', () => {
+    el.querySelectorAll('.q-rm').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
         questions = questions.filter(x => x.id !== btn.dataset.id);
         save(); notifyChange(); renderList();
+      });
+    });
+    el.querySelectorAll('.q-up').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); moveQuestion(btn.dataset.id, -1); });
+    });
+    el.querySelectorAll('.q-down').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); moveQuestion(btn.dataset.id, 1); });
+    });
+    el.querySelectorAll('.cb-item-head').forEach(head => {
+      head.addEventListener('click', e => {
+        if (e.target.closest('.q-rm, .q-up, .q-down')) return;
+        const id = head.closest('.cb-item')?.dataset.id;
+        const q = questions.find(x => x.id === id);
+        if (!q) return;
+        q.open = !q.open;
+        save(); renderList();
       });
     });
     bindQuestionInputs(el);
@@ -288,31 +303,34 @@
   function renderQuestionFields(q) {
     if (q.type === 'radius') {
       return `
-        <label>Center (paste maps link or coords)</label>
-        <textarea class="q-coord" data-id="${q.id}" rows="2" placeholder="40.73, -73.99 or maps URL">${q.lat != null ? fmtCoord(q.lat, q.lng) : ''}</textarea>
-        <div class="cb-row">
+        <label>Center</label>
+        <textarea class="q-coord" data-id="${q.id}" rows="2" placeholder="Paste Maps link or lat, lng">${q.lat != null ? fmtCoord(q.lat, q.lng) : ''}</textarea>
+        <div class="q-tools">${liveBtn(q.id, 'center')}</div>
+        <div class="game-row">
           <input class="q-radius" data-id="${q.id}" type="number" step="any" inputmode="decimal" value="${q.radius}" min="0.01" />
           <select class="q-unit" data-id="${q.id}">
             <option value="miles"${(q.unit || 'miles') === 'miles' ? ' selected' : ''}>miles</option>
             <option value="kilometers"${q.unit === 'kilometers' ? ' selected' : ''}>km</option>
           </select>
         </div>
-        <p class="cb-hint">Hider is:</p>
-        <div class="cb-seg q-answer" data-id="${q.id}">
+        <p class="game-hint">Hider is inside or outside this radius. Drag the map pin to move the center.</p>
+        <div class="seg q-answer" data-id="${q.id}">
           <button type="button" data-ans="within"${q.answer === 'within' ? ' class="active"' : ''}>Inside</button>
           <button type="button" data-ans="outside"${q.answer === 'outside' ? ' class="active"' : ''}>Outside</button>
         </div>`;
     }
     if (q.type === 'thermometer') {
       return `
-        <label>Start (cold pole)</label>
+        <label>Start</label>
         <textarea class="q-coord-a" data-id="${q.id}" rows="2" placeholder="Paste start location">${q.latA != null ? fmtCoord(q.latA, q.lngA) : ''}</textarea>
-        <label>End (warm pole)</label>
+        <div class="q-tools">${liveBtn(q.id, 'A')}</div>
+        <label>End</label>
         <textarea class="q-coord-b" data-id="${q.id}" rows="2" placeholder="Paste end location">${q.latB != null ? fmtCoord(q.latB, q.lngB) : ''}</textarea>
-        <p class="cb-hint">Hider is warmer at:</p>
-        <div class="cb-seg q-answer" data-id="${q.id}">
-          <button type="button" data-ans="warmer"${q.answer === 'warmer' ? ' class="active"' : ''}>End</button>
-          <button type="button" data-ans="colder"${q.answer === 'colder' ? ' class="active"' : ''}>Start</button>
+        <div class="q-tools">${liveBtn(q.id, 'B')}</div>
+        <p class="game-hint">If warmer at the end, stations closer to start drop unless their hide circle straddles both sides. Drag the Start/End pins.</p>
+        <div class="seg q-answer" data-id="${q.id}">
+          <button type="button" data-ans="warmer"${q.answer === 'warmer' ? ' class="active"' : ''}>Warmer at end</button>
+          <button type="button" data-ans="colder"${q.answer === 'colder' ? ' class="active"' : ''}>Warmer at start</button>
         </div>`;
     }
     if (q.type === 'borough') {
@@ -322,9 +340,8 @@
       return `
         <label>Your borough</label>
         <select class="q-borough" data-id="${q.id}">${opts}</select>
-        <p class="cb-hint">Hider is in the:</p>
-        <div class="cb-seg q-answer" data-id="${q.id}">
-          <button type="button" data-ans="same"${q.answer === 'same' ? ' class="active"' : ''}>Same borough</button>
+        <div class="seg q-answer" data-id="${q.id}">
+          <button type="button" data-ans="same"${q.answer === 'same' ? ' class="active"' : ''}>Same</button>
           <button type="button" data-ans="different"${q.answer === 'different' ? ' class="active"' : ''}>Different</button>
         </div>`;
     }
@@ -332,10 +349,11 @@
       const near = q.lat != null ? nearestAirport({ lat: q.lat, lng: q.lng }) : null;
       return `
         <label>Your location</label>
-        <textarea class="q-coord" data-id="${q.id}" rows="2" placeholder="Paste maps link or coords">${q.lat != null ? fmtCoord(q.lat, q.lng) : ''}</textarea>
-        ${near ? `<p class="cb-hint">Your nearest: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
-        <p class="cb-hint">Skyports · LaGuardia · Newark. Hider shares nearest airport:</p>
-        <div class="cb-seg q-answer" data-id="${q.id}">
+        <textarea class="q-coord" data-id="${q.id}" rows="2" placeholder="Paste Maps link or coords">${q.lat != null ? fmtCoord(q.lat, q.lng) : ''}</textarea>
+        <div class="q-tools">${liveBtn(q.id, 'center')}</div>
+        ${near ? `<p class="game-hint">Nearest: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
+        <p class="game-hint">Skyports · LaGuardia · JFK</p>
+        <div class="seg q-answer" data-id="${q.id}">
           <button type="button" data-ans="same"${q.answer === 'same' ? ' class="active"' : ''}>Same</button>
           <button type="button" data-ans="different"${q.answer === 'different' ? ' class="active"' : ''}>Different</button>
         </div>`;
@@ -356,8 +374,14 @@
         const q = questions.find(x => x.id === btn.closest('.q-answer').dataset.id);
         if (!q) return;
         q.answer = btn.dataset.ans;
-        q.locked = true;
         save(); notifyChange(); renderList();
+      });
+    });
+    el.querySelectorAll('.q-live').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (window.JetLagCitibikeApp?.fillQuestionFromLocation) {
+          window.JetLagCitibikeApp.fillQuestionFromLocation(btn.dataset.id, btn.dataset.field);
+        }
       });
     });
   }
@@ -367,11 +391,13 @@
     if (!q) return;
     const root = document.querySelector(`.cb-item[data-id="${id}"]`);
     if (!root) return;
-    if (q.type === 'radius') {
+    if (q.type === 'radius' || q.type === 'airport') {
       const pt = parseCoord(root.querySelector('.q-coord')?.value);
       if (pt) { q.lat = pt.lat; q.lng = pt.lng; }
-      q.radius = parseFloat(root.querySelector('.q-radius')?.value) || q.radius;
-      q.unit = root.querySelector('.q-unit')?.value || 'miles';
+      if (q.type === 'radius') {
+        q.radius = parseFloat(root.querySelector('.q-radius')?.value) || q.radius;
+        q.unit = root.querySelector('.q-unit')?.value || 'miles';
+      }
     } else if (q.type === 'thermometer') {
       const a = parseCoord(root.querySelector('.q-coord-a')?.value);
       const b = parseCoord(root.querySelector('.q-coord-b')?.value);
@@ -379,15 +405,31 @@
       if (b) { q.latB = b.lat; q.lngB = b.lng; }
     } else if (q.type === 'borough') {
       q.borough = root.querySelector('.q-borough')?.value || q.borough;
-    } else if (q.type === 'airport') {
-      const pt = parseCoord(root.querySelector('.q-coord')?.value);
-      if (pt) { q.lat = pt.lat; q.lng = pt.lng; }
     }
     save(); notifyChange();
   }
 
+  function setQuestionPoint(id, field, lat, lng) {
+    const q = questions.find(x => x.id === id);
+    if (!q) return;
+    if (field === 'center') { q.lat = lat; q.lng = lng; }
+    else if (field === 'A') { q.latA = lat; q.lngA = lng; }
+    else if (field === 'B') { q.latB = lat; q.lngB = lng; }
+    save(); notifyChange(); renderList();
+  }
+
+  function moveQuestion(id, dir) {
+    const i = questions.findIndex(q => q.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= questions.length) return;
+    const tmp = questions[i];
+    questions[i] = questions[j];
+    questions[j] = tmp;
+    save(); notifyChange(); renderList();
+  }
+
   function addQuestion(type) {
-    const base = { id: crypto.randomUUID(), type, color: nextColor(), answer: null, locked: false };
+    const base = { id: crypto.randomUUID(), type, color: nextColor(), answer: null, open: true };
     if (type === 'radius') {
       const radius = parseFloat(document.getElementById('cb-radius-val')?.value) || 1;
       const unit = document.getElementById('cb-radius-unit')?.value || 'miles';
@@ -409,17 +451,14 @@
   async function initStationData(geojson) {
     try {
       const boro = await (await fetch('data/nyc_boroughs.geojson')).json();
-      for (const f of boro.features) {
-        boroughPolys[f.properties.BoroName] = f;
-      }
-      boroughUnion = Geo().unionMany(boro.features);
+      for (const f of boro.features) boroughPolys[f.properties.BoroName] = f;
+      const union = Geo().unionMany(boro.features);
       const njBox = turf.bboxPolygon([-74.35, 40.55, -73.85, 41.05]);
       try {
-        jerseyPoly = turf.difference(turf.featureCollection([njBox, boroughUnion])) || njBox;
+        boroughPolys.Jersey = turf.difference(turf.featureCollection([njBox, union])) || njBox;
       } catch (_) {
-        jerseyPoly = njBox;
+        boroughPolys.Jersey = njBox;
       }
-      boroughPolys.Jersey = jerseyPoly;
     } catch (e) {
       console.warn('borough load failed', e);
     }
@@ -430,13 +469,10 @@
       const pt = turf.point([lng, lat]);
       for (const [name, poly] of Object.entries(boroughPolys)) {
         if (name === 'Jersey') continue;
-        if (turf.booleanPointInPolygon(pt, poly)) {
-          borough = name;
-          break;
-        }
+        if (turf.booleanPointInPolygon(pt, poly)) { borough = name; break; }
       }
       return {
-        id: f.properties.station_id || String(i),
+        id: `${lng.toFixed(6)}_${lat.toFixed(6)}_${i}`,
         name: f.properties.name || `Station ${i}`,
         lng, lat, borough,
       };
@@ -464,10 +500,10 @@
 
   window.JetLagCitibikeGame = {
     parseCoord, fmtCoord, bindUI, renderList, initStationData,
-    getActiveStations, activeStationFeatures,
-    questionsGeoJSON, stationCircle,
+    getActiveStations, activeStationFeatures, mergedZonesGeoJSON,
+    questionsGeoJSON, stationCircle, setQuestionPoint, distMi,
+    getQuestions: () => questions,
     get hideRadiusMi() { return hideRadiusMi; },
-    set hideRadiusMi(v) { hideRadiusMi = v; notifyChange(); },
     get stations() { return stations; },
     set onChange(fn) { onChange = fn; },
     BOROUGHS, AIRPORTS,

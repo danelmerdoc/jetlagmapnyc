@@ -54,10 +54,26 @@
   .game-rm { margin-left:auto; border:none; background:transparent; color:var(--text); cursor:pointer; font-size:16px; line-height:1; }
   .game-status { margin-top:4px; font-weight:600; color:var(--accent); }
   .game-item-body { opacity:.85; }
+
+  .map-switch {
+    position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:4; display:flex;
+    background:var(--panel); border:2px solid var(--border); border-radius:10px; overflow:hidden;
+    box-shadow:0 6px 20px rgba(0,0,0,.18);
+  }
+  .map-switch a {
+    padding:9px 12px; font-size:12px; font-weight:700; text-decoration:none; color:var(--text);
+  }
+  .map-switch a.current { background:#003DA5; color:#fff; }
+  body.dark .map-switch a.current { background:var(--accent); color:#1a1408; }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<nav class="map-switch" aria-label="Map mode">
+  <a href="index.html" class="current">Transit</a>
+  <a href="citibike.html">Citi Bike</a>
+</nav>
+
 <div id="panel" class="panel">
   <h1>Jet Lag: The Game</h1>
   <p class="sub">NYC Hide + Seek · Playable transit · 0.375 mi hide zones</p>
