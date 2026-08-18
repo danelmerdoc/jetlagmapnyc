@@ -5,9 +5,9 @@
   const STORAGE_KEY = 'jetlagCitibikeQuestionsV3';
   const BOROUGHS = ['Manhattan', 'Bronx', 'Brooklyn', 'Queens', 'Staten Island', 'Jersey'];
   const AIRPORTS = [
-    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7348, lng: -73.9726 },
-    { id: 'lga', code: 'LGA', name: 'LaGuardia', lat: 40.7769, lng: -73.8740 },
-    { id: 'jfk', code: 'JFK', name: 'JFK', lat: 40.6413, lng: -73.7781 },
+    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7351480012018, lng: -73.97289857268333 },
+    { id: 'lga', code: 'LGA', name: 'LaGuardia', lat: 40.77569627112248, lng: -73.87024238705636 },
+    { id: 'jfk', code: 'JFK', name: 'JFK', lat: 40.64290255140161, lng: -73.78581315279008 },
   ];
 
   let colorIdx = 0;
@@ -201,20 +201,58 @@
     return rings.length ? rings : Geo().flattenRings(poly);
   }
 
+  const boroughLandCache = {};
+  /**
+   * The city's borough file follows the historic county line along the Brooklyn
+   * and Queens low-water marks, so piers built out over the water — the Brooklyn
+   * Bridge Park piers among them — are filed under Manhattan. Every such sliver is
+   * under eight acres, while the smallest real outlying landmass (Marble Hill) is
+   * seventy-five, so dropping small detached parts removes the piers and keeps
+   * Governors, Roosevelt, Randall's and Wards islands. No station sits on one.
+   */
+  const MIN_PART_SQ_M = 40 * 4046.86;
+
+  function boroughLand(name) {
+    if (boroughLandCache[name] !== undefined) return boroughLandCache[name];
+    const poly = boroughPolys[name] || null;
+    let land = poly;
+    if (poly && poly.geometry.type === 'MultiPolygon') {
+      const parts = poly.geometry.coordinates;
+      let mainIdx = 0;
+      let mainArea = -1;
+      const areas = parts.map((p, i) => {
+        let a = 0;
+        try { a = turf.area(turf.polygon(p)); } catch (_) { a = 0; }
+        if (a > mainArea) { mainArea = a; mainIdx = i; }
+        return a;
+      });
+      const keep = parts.filter((p, i) => i === mainIdx || areas[i] >= MIN_PART_SQ_M);
+      if (keep.length && keep.length < parts.length) {
+        land = turf.multiPolygon(keep, poly.properties);
+      }
+    }
+    boroughLandCache[name] = land;
+    return land;
+  }
+
   const boroughMaskCache = {};
 
   /**
    * Jersey is the NJ box minus the five boroughs — only built when a mask needs it.
-   * Outlines are coarse on purpose: this feeds the gray overlay, while station
-   * elimination uses the precise per-station edge distances.
+   * The 6 m tolerance matches the outline elimination measures against, so the gray
+   * edge and the surviving stations come from the same shape. It is fine enough to
+   * keep Governors Island recognisable, where the previous 90 m flattened it into a
+   * twelve-sided blob.
    */
   function boroughPoly(name) {
     if (name !== 'Jersey') {
       if (boroughMaskCache[name] !== undefined) return boroughMaskCache[name];
-      const poly = boroughPolys[name] || null;
-      let mask = poly;
-      if (poly) {
-        try { mask = turf.simplify(poly, { tolerance: 0.0008, highQuality: false }); } catch (_) { mask = poly; }
+      const land = boroughLand(name);
+      let mask = land;
+      if (land) {
+        try {
+          mask = turf.simplify(land, { tolerance: 0.00005, highQuality: false });
+        } catch (_) { mask = land; }
       }
       boroughMaskCache[name] = mask;
       return mask;
@@ -241,11 +279,11 @@
     if (name === 'Jersey') {
       // Jersey's edge is the NJ box plus every borough outline, so skip the union.
       rings = [NJ_BOX_RING];
-      for (const poly of Object.values(boroughPolys)) {
-        rings = rings.concat(simplifiedRings(poly, 0.00005));
+      for (const boro of Object.keys(boroughPolys)) {
+        rings = rings.concat(simplifiedRings(boroughLand(boro), 0.00005));
       }
     } else {
-      rings = simplifiedRings(boroughPolys[name], 0.00005);
+      rings = simplifiedRings(boroughLand(name), 0.00005);
     }
     const index = rings.length ? Geo().buildSegmentIndex(rings, 0.02) : null;
     boroughIndexCache[name] = index;
@@ -287,15 +325,35 @@
     return out;
   }
 
+  const airportBisectors = new Map();
+
+  function airportBisector(a, b) {
+    const key = `${a.id}|${b.id}`;
+    let bis = airportBisectors.get(key);
+    if (bis === undefined) {
+      bis = Geo().bisectorBetween(a, b);
+      airportBisectors.set(key, bis);
+    }
+    return bis;
+  }
+
+  /**
+   * Airports that could be the nearest one from somewhere in the station's hide
+   * zone. An airport is out only when the whole zone sits on the far side of a
+   * bisector, which is the same geodesic bisector the cell outline is drawn from,
+   * so the map and the elimination always agree.
+   */
   function possibleAirportIds(st) {
     const h = hideRadiusMi;
     const out = [];
     for (const a of AIRPORTS) {
-      const da = distMi(st, a);
       let ok = true;
       for (const b of AIRPORTS) {
         if (a.id === b.id) continue;
-        if (da - distMi(st, b) > 2 * h) { ok = false; break; }
+        const bis = airportBisector(b, a);
+        if (!bis) continue;
+        // Positive is toward `a`; the zone reaches its side while within h.
+        if (Geo().bisectorSignedMiles(bis, st.lng, st.lat) < -h) { ok = false; break; }
       }
       if (ok) out.push(a.id);
     }

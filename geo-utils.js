@@ -32,9 +32,28 @@ window.JetLagGeo = (function () {
     }
   }
 
+  const WORLD_RING = WORLD.geometry.coordinates[0];
+
+  /**
+   * Everything outside `region`, i.e. the gray overlay.
+   *
+   * When the region's parts are solid and disjoint, that is just the world ring
+   * with each part's outline punched out as a hole — exact, and far cheaper than a
+   * general boolean against a detailed shoreline. Parts that already carry
+   * interior rings would nest holes inside holes, so those fall back to a
+   * difference.
+   */
   function holedMask(region) {
     const f = safePoly(region);
     if (!f) return WORLD;
+    const parts = f.geometry.type === 'MultiPolygon'
+      ? f.geometry.coordinates
+      : [f.geometry.coordinates];
+    if (parts.length && parts.every(p => p.length === 1)) {
+      try {
+        return turf.polygon([WORLD_RING].concat(parts.map(p => p[0])));
+      } catch (_) { /* fall through to the boolean */ }
+    }
     try {
       const hole = turf.difference(turf.featureCollection([WORLD, f]));
       return hole || WORLD;
@@ -49,7 +68,14 @@ window.JetLagGeo = (function () {
     if (!base) return mapData;
     const reg = safePoly(region);
     if (!reg) return base;
-    if (positive) return intersect(base, reg) || turf.feature(turf.polygon([]));
+    // Every region we build sits well inside WORLD, so clipping against it is a
+    // no-op — skipping it avoids an expensive boolean on detailed outlines. The
+    // result is wrapped fresh because callers attach properties to it, and the
+    // region itself may be a cached borough outline.
+    if (positive) {
+      if (base === WORLD) return turf.feature(reg.geometry, { ...reg.properties });
+      return intersect(base, reg) || turf.feature(turf.polygon([]));
+    }
     return intersect(base, holedMask(reg)) || turf.feature(turf.polygon([]));
   }
 
@@ -115,29 +141,18 @@ window.JetLagGeo = (function () {
    * `sweep` runs along the circle through `mid`. Nothing here approximates the
    * sphere with a flat frame, so the drawn line is the equidistant locus itself.
    */
-  let bisCache = { key: null, bis: null };
-
-  function thermoBisector(q) {
-    if (![q.lngA, q.latA, q.lngB, q.latB].every(Number.isFinite)) return null;
-    // Elimination asks for this once per station, so keep the last one.
-    const key = `${q.lngA},${q.latA},${q.lngB},${q.latB}`;
-    if (bisCache.key === key) return bisCache.bis;
-    const a = toVec(q.lngA, q.latA);
-    const b = toVec(q.lngB, q.latB);
-    const pole = unit(mix3(a, 1, b, -1));
-    const mid = unit(mix3(a, 1, b, 1));
+  function bisectorBetween(a, b) {
+    if (![a?.lng, a?.lat, b?.lng, b?.lat].every(Number.isFinite)) return null;
+    const va = toVec(a.lng, a.lat);
+    const vb = toVec(b.lng, b.lat);
+    const pole = unit(mix3(va, 1, vb, -1));
+    const mid = unit(mix3(va, 1, vb, 1));
     const sweep = pole && mid ? unit(cross3(pole, mid)) : null;
-    const bis = sweep ? { pole, mid, sweep } : null;
-    bisCache = { key, bis };
-    return bis;
+    return sweep ? { pole, mid, sweep, a: va, b: vb } : null;
   }
 
-  /**
-   * Miles from the bisector; positive means closer to B, the warm end.
-   * P·pole > 0 means P is nearer A, so the sign is flipped.
-   */
-  function thermometerSignedMiles(q, lng, lat) {
-    const bis = thermoBisector(q);
+  /** Miles from the bisector; positive means closer to B. */
+  function bisectorSignedMiles(bis, lng, lat) {
     if (!bis) return 0;
     const s = Math.max(-1, Math.min(1, dot3(bis.pole, toVec(lng, lat))));
     return -Math.asin(s) * EARTH_RADIUS_MI;
@@ -157,15 +172,15 @@ window.JetLagGeo = (function () {
     return out;
   }
 
-  /** Region on the warmer (B) or colder (A) side of the bisector. */
-  function thermometerRegion(q, warmer) {
-    const bis = thermoBisector(q);
+  /** Everything closer to B (or to A) than to the other end. */
+  function bisectorHalfPlane(bis, towardB, spanMi) {
     if (!bis) return WORLD;
-    const near = bisectorArc(bis, 500, 96);
+    const span = spanMi || 500;
+    const near = bisectorArc(bis, span, 96);
     // Arc points are perpendicular to `pole`, so stepping along it by angle t
-    // lands exactly t radians off the bisector. Warm side is where P·pole < 0.
-    const t = 500 / EARTH_RADIUS_MI;
-    const side = warmer ? -1 : 1;
+    // lands exactly t radians off the bisector. B's side is where P·pole < 0.
+    const t = span / EARTH_RADIUS_MI;
+    const side = towardB ? -1 : 1;
     const far = near
       .map(v => mix3(v, Math.cos(t), bis.pole, side * Math.sin(t)))
       .reverse();
@@ -175,36 +190,77 @@ window.JetLagGeo = (function () {
   }
 
   /** The bisector itself, drawn through the geodesic midpoint. */
-  function thermometerBisectorLine(q, lengthMi) {
-    const bis = thermoBisector(q);
+  function bisectorLine(bis, lengthMi) {
     if (!bis) return null;
     return turf.lineString(bisectorArc(bis, lengthMi || 60, 64).map(toLngLat));
   }
 
-  /** The A–B geodesic, so the bisector can be read against what it bisects. */
-  function thermometerLinkLine(q) {
-    const bis = thermoBisector(q);
+  /** The geodesic from A to B, so a bisector can be read against what it bisects. */
+  function geodesicLine(bis, steps) {
     if (!bis) return null;
-    const a = toVec(q.lngA, q.latA);
-    const b = toVec(q.lngB, q.latB);
-    const span = Math.acos(Math.max(-1, Math.min(1, dot3(a, b))));
+    const cos = Math.max(-1, Math.min(1, dot3(bis.a, bis.b)));
+    const span = Math.acos(cos);
     if (!span) return null;
-    const steps = 24;
+    // Component of B perpendicular to A, so rotating A toward it stays in-plane.
+    const perp = unit(mix3(bis.b, 1, bis.a, -cos));
+    if (!perp) return null;
+    const n = steps || 24;
     const pts = [];
-    for (let i = 0; i <= steps; i++) {
-      const t = (i / steps) * span;
-      // Rotate from A toward B within their common plane.
-      const v = unit(mix3(a, Math.cos(t), unit(mix3(b, 1, a, -dot3(a, b))), Math.sin(t)));
-      pts.push(toLngLat(v || a));
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * span;
+      pts.push(toLngLat(mix3(bis.a, Math.cos(t), perp, Math.sin(t))));
     }
     return turf.lineString(pts);
+  }
+
+  let thermoCache = { key: null, bis: null };
+
+  /** Elimination asks for this once per station, so keep the last one. */
+  function thermoBisector(q) {
+    const key = `${q.lngA},${q.latA},${q.lngB},${q.latB}`;
+    if (thermoCache.key === key) return thermoCache.bis;
+    const bis = bisectorBetween(
+      { lng: q.lngA, lat: q.latA },
+      { lng: q.lngB, lat: q.latB },
+    );
+    thermoCache = { key, bis };
+    return bis;
+  }
+
+  /** Miles from the bisector; positive means closer to B, the warm end. */
+  function thermometerSignedMiles(q, lng, lat) {
+    return bisectorSignedMiles(thermoBisector(q), lng, lat);
+  }
+
+  /** Region on the warmer (B) or colder (A) side of the bisector. */
+  function thermometerRegion(q, warmer) {
+    return bisectorHalfPlane(thermoBisector(q), warmer);
+  }
+
+  function thermometerBisectorLine(q, lengthMi) {
+    return bisectorLine(thermoBisector(q), lengthMi);
+  }
+
+  function thermometerLinkLine(q) {
+    return geodesicLine(thermoBisector(q));
   }
 
   /** Geodesic midpoint of the two thermometer ends. */
   function thermometerMidpoint(q) {
     const bis = thermoBisector(q);
-    if (!bis) return null;
-    return toLngLat(bis.mid);
+    return bis ? toLngLat(bis.mid) : null;
+  }
+
+  function nearestIndex(target, points) {
+    const v = toVec(target.lng, target.lat);
+    let best = -1;
+    let bestDot = -Infinity;
+    for (let i = 0; i < points.length; i++) {
+      // Larger dot product means a smaller angle, so a nearer point.
+      const d = dot3(v, toVec(points[i].lng, points[i].lat));
+      if (d > bestDot) { bestDot = d; best = i; }
+    }
+    return best;
   }
 
   function flattenRings(poly) {
@@ -317,19 +373,31 @@ window.JetLagGeo = (function () {
     return best;
   }
 
-  /** Voronoi cell for nearest of points[] containing target point. */
+  /**
+   * Voronoi cell of whichever point in points[] is nearest to target.
+   *
+   * turf.voronoi treats lng/lat as a flat plane, so its edges are equidistant in
+   * degrees rather than miles — around New York that misplaced airport cell edges
+   * by up to ten miles. The cell is instead the intersection of the exact
+   * bisector half-planes against every other point.
+   */
   function voronoiCellContaining(target, points) {
-    if (!points.length) return null;
+    if (!points || !points.length) return null;
     if (points.length === 1) return WORLD;
-    const fc = turf.featureCollection(points.map(p => turf.point([p.lng, p.lat], { id: p.id })));
-    const bbox = turf.bbox(fc);
-    const pad = 0.15;
-    const vor = turf.voronoi(fc, { bbox: [bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad] });
-    const pt = turf.point([target.lng, target.lat]);
-    for (const f of vor.features) {
-      if (turf.booleanPointInPolygon(pt, f)) return f;
+    const i = nearestIndex(target, points);
+    if (i < 0) return null;
+    const own = points[i];
+    let cell = null;
+    for (let j = 0; j < points.length; j++) {
+      if (j === i) continue;
+      const bis = bisectorBetween(points[j], own);
+      if (!bis) continue;
+      // `own` is B in this bisector, so keep the side toward B.
+      const half = bisectorHalfPlane(bis, true);
+      cell = cell ? intersect(cell, half) : half;
+      if (!cell) return null;
     }
-    return null;
+    return cell;
   }
 
   function unionMany(features) {
@@ -349,6 +417,7 @@ window.JetLagGeo = (function () {
     WORLD, intersect, holedMask, modifyMapData, geodesicCircle,
     thermometerRegion, thermometerBisectorLine, thermometerSignedMiles,
     thermometerMidpoint, thermometerLinkLine,
+    bisectorBetween, bisectorSignedMiles, bisectorHalfPlane, bisectorLine,
     localFrame, flattenRings, minDistanceToRingsMi, MI_PER_DEG_LAT,
     buildSegmentIndex, minDistanceIndexedMi,
     voronoiCellContaining, unionMany, safePoly,

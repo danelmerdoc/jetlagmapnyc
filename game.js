@@ -1,13 +1,20 @@
-/** Jet Lag Hide & Seek — radius + thermometer tools (inspired by JetLagHideAndSeek). */
+/** Jet Lag NYC — question logic with map elimination (inspired by JetLagHideAndSeek). */
 (function () {
-  const COLORS = ['#ffb020', '#4da3ff', '#6bcb77', '#ff6b9d', '#c084fc', '#f97316'];
+  const Geo = () => window.JetLagGeo;
+  const COLORS = ['#ffb020', '#4da3ff', '#6bcb77', '#ff6b9d', '#c084fc', '#f97316', '#14b8a6'];
+  const STORAGE_KEY = 'jetlagNycQuestionsV2';
+  const PLAY_AIRPORTS = [
+    { id: 'lga', code: 'LGA', name: 'LaGuardia', lat: 40.77569627112248, lng: -73.87024238705636 },
+    { id: 'jfk', code: 'JFK', name: 'JFK', lat: 40.64290255140161, lng: -73.78581315279008 },
+    { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7351480012018, lng: -73.97289857268333 },
+  ];
+
   let colorIdx = 0;
   let questions = [];
-  let hider = null; // { lat, lng }
-  let placeMode = null; // { type, id, step, temp? }
   let mapRef = null;
-
-  const STORAGE_KEY = 'jetlagNycQuestions';
+  let mapClickBound = false;
+  let placeMode = null;
+  let boroughArea = null;
 
   function nextColor() {
     const c = COLORS[colorIdx % COLORS.length];
@@ -32,84 +39,117 @@
     const parts = s.split(/[,\s]+/).map(Number).filter(n => !Number.isNaN(n));
     if (parts.length < 2) return null;
     let a = parts[0], b = parts[1];
-    // lat,lon if first value looks like latitude
-    if (Math.abs(a) <= 90 && Math.abs(b) <= 180 && Math.abs(b) > 90) {
-      return { lat: a, lng: b };
-    }
-    if (Math.abs(b) <= 90 && Math.abs(a) <= 180) {
-      return { lat: b, lng: a };
-    }
+    if (Math.abs(a) <= 90 && Math.abs(b) <= 180 && Math.abs(b) > 90) return { lat: a, lng: b };
+    if (Math.abs(b) <= 90 && Math.abs(a) <= 180) return { lat: b, lng: a };
     return { lat: a, lng: b };
   }
 
   function fmtCoord(lat, lng) {
-    return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    return `${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`;
   }
 
-  function dist(a, b, units) {
-    return turf.distance(turf.point([a.lng, a.lat]), turf.point([b.lng, b.lat]), { units });
-  }
-
-  function sideOfThermometer(q, pt) {
-    const scoreA = turf.distance(turf.point([q.lngA, q.latA]), turf.point([pt.lng, pt.lat]));
-    const scoreB = turf.distance(turf.point([q.lngB, q.latB]), turf.point([pt.lng, pt.lat]));
-    return scoreA <= scoreB;
-  }
-
-  function bisectorGeo(q) {
-    const a = turf.point([q.lngA, q.latA]);
-    const b = turf.point([q.lngB, q.latB]);
-    const mid = turf.midpoint(a, b);
-    const bearing = turf.bearing(a, b);
-    const left = turf.destination(mid, 80, bearing + 90, { units: 'kilometers' });
-    const right = turf.destination(mid, 80, bearing - 90, { units: 'kilometers' });
-    return turf.lineString([left.geometry.coordinates, right.geometry.coordinates]);
-  }
-
-  function applyHider() {
-    if (!hider) return;
-    for (const q of questions) {
-      if (q.type === 'radius') {
-        q.within = dist(hider, { lat: q.lat, lng: q.lng }, q.unit) <= q.radius;
-      } else if (q.type === 'thermometer') {
-        q.warmer = sideOfThermometer(q, hider);
-      }
+  function nearestAirport(pt) {
+    let best = null, bestD = Infinity;
+    for (const a of PLAY_AIRPORTS) {
+      const d = turf.distance(turf.point([pt.lng, pt.lat]), turf.point([a.lng, a.lat]), { units: 'miles' });
+      if (d < bestD) { bestD = d; best = a; }
     }
+    return { airport: best, miles: bestD };
+  }
+
+  function getBaseArea() {
+    const hz = window.JetLagHideZones?.getPlayableArea?.();
+    if (hz) return Geo().safePoly(hz) || hz;
+    if (boroughArea) return boroughArea;
+    return Geo().WORLD;
+  }
+
+  async function loadBoroughFallback() {
+    try {
+      const b = await (await fetch('data/nyc_boroughs.geojson')).json();
+      boroughArea = Geo().unionMany(b.features) || Geo().WORLD;
+    } catch (_) { boroughArea = Geo().WORLD; }
+  }
+
+  function applyQuestion(mapData, q) {
+    if (q.locked === false) return mapData;
+    if (q.type === 'radius') {
+      if (q.lat == null || q.lng == null || q.answer == null) return mapData;
+      const circle = Geo().geodesicCircle(q.lng, q.lat, q.radius, q.unit);
+      return Geo().modifyMapData(mapData, circle, q.answer === 'within');
+    }
+    if (q.type === 'thermometer') {
+      if (q.latA == null || q.answer == null) return mapData;
+      const region = Geo().thermometerRegion(q, q.answer === 'warmer');
+      return Geo().modifyMapData(mapData, region, true);
+    }
+    if (q.type === 'matching' && q.subtype === 'airport') {
+      if (q.lat == null || q.answer == null) return mapData;
+      const seeker = { lng: q.lng, lat: q.lat };
+      const sCell = Geo().voronoiCellContaining(seeker, PLAY_AIRPORTS);
+      if (!sCell) return mapData;
+      return Geo().modifyMapData(mapData, sCell, q.answer === 'same');
+    }
+    return mapData;
+  }
+
+  function recomputeElimination() {
+    if (!mapRef?.getSource('game-elimination')) return;
+    let area = getBaseArea();
+    for (const q of questions) {
+      area = applyQuestion(area, q);
+    }
+    const invalid = Geo().holedMask(area);
+    mapRef.getSource('game-elimination').setData(invalid);
+    syncQuestionLayers();
   }
 
   function questionsGeoJSON() {
     const features = [];
     for (const q of questions) {
-      if (q.type === 'radius') {
-        const circle = turf.circle([q.lng, q.lat], q.radius, { steps: 64, units: q.unit });
+      if (q.type === 'radius' && q.lat != null) {
+        const circle = Geo().geodesicCircle(q.lng, q.lat, q.radius, q.unit);
         circle.properties = {
           kind: 'radius-fill', id: q.id, color: q.color,
-          within: q.within, label: `Radius ${q.radius} ${q.unit}`,
+          answer: q.answer, locked: q.locked,
         };
         features.push(circle);
         features.push(turf.feature(turf.point([q.lng, q.lat]).geometry, {
           kind: 'radius-center', id: q.id, color: q.color,
         }));
-      } else if (q.type === 'thermometer') {
+      } else if (q.type === 'thermometer' && q.latA != null) {
         features.push(turf.feature(turf.lineString([
           [q.lngA, q.latA], [q.lngB, q.latB],
         ]).geometry, { kind: 'thermo-line', id: q.id, color: q.color }));
-        features.push(turf.feature(bisectorGeo(q).geometry, {
-          kind: 'thermo-bisector', id: q.id, color: q.color, warmer: q.warmer,
-        }));
+        if (q.answer != null) {
+          const region = Geo().thermometerRegion(q, q.answer === 'warmer');
+          region.properties = { kind: 'thermo-region', id: q.id, color: q.color };
+          features.push(region);
+        }
         features.push(turf.feature(turf.point([q.lngA, q.latA]).geometry, {
-          kind: 'thermo-end', id: q.id, end: 'A', color: q.color, label: 'A (warm pole)',
+          kind: 'thermo-end', id: q.id, end: 'A', color: q.color,
         }));
         features.push(turf.feature(turf.point([q.lngB, q.latB]).geometry, {
-          kind: 'thermo-end', id: q.id, end: 'B', color: q.color, label: 'B (cold pole)',
+          kind: 'thermo-end', id: q.id, end: 'B', color: q.color,
         }));
+      } else if (q.type === 'matching' && q.subtype === 'airport' && q.lat != null) {
+        for (const a of PLAY_AIRPORTS) {
+          features.push(turf.feature(turf.point([a.lng, a.lat]).geometry, {
+            kind: 'airport', id: q.id, code: a.code, name: a.name,
+          }));
+        }
+        const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, PLAY_AIRPORTS);
+        if (cell) {
+          cell.properties = { kind: 'airport-cell', id: q.id, color: q.color };
+          features.push(cell);
+        }
       }
     }
     return { type: 'FeatureCollection', features };
   }
 
-  function syncMapLayers() {
-    if (!mapRef || !mapRef.getSource('game-questions')) return;
+  function syncQuestionLayers() {
+    if (!mapRef?.getSource('game-questions')) return;
     mapRef.getSource('game-questions').setData(questionsGeoJSON());
   }
 
@@ -118,125 +158,175 @@
     if (!el) return;
     el.innerHTML = '';
     if (!questions.length) {
-      el.innerHTML = '<p class="game-hint">No questions yet. Add a radius or thermometer, then click the map to place points.</p>';
+      el.innerHTML = '<p class="game-hint">Add questions below. Enter your (seeker) coordinates — the hider only answers yes/no.</p>';
       return;
     }
     questions.forEach(q => {
       const div = document.createElement('div');
       div.className = 'game-item';
-      const title = q.type === 'radius'
-        ? `Radius · ${q.radius} ${q.unit}`
-        : 'Thermometer';
-      let status = '';
-      if (hider) {
-        if (q.type === 'radius') status = q.within ? '✓ Hider INSIDE' : '✗ Hider OUTSIDE';
-        else status = q.warmer ? '✓ Hider on A side (warmer)' : '✗ Hider on B side (colder)';
-      }
+      div.dataset.id = q.id;
+      const title = q.type === 'radius' ? `Radius · ${q.radius} ${q.unit}`
+        : q.type === 'thermometer' ? 'Thermometer'
+          : 'Matching · nearest airport';
       div.innerHTML = `
         <div class="game-item-head">
           <span class="game-dot" style="background:${q.color}"></span>
           <strong>${title}</strong>
           <button type="button" class="game-rm" data-id="${q.id}">×</button>
         </div>
-        <div class="game-item-body">${describe(q)}</div>
-        ${status ? `<div class="game-status">${status}</div>` : ''}`;
+        <div class="game-item-body">${renderQuestionFields(q)}</div>`;
       el.appendChild(div);
     });
     el.querySelectorAll('.game-rm').forEach(btn => {
       btn.addEventListener('click', () => {
         questions = questions.filter(x => x.id !== btn.dataset.id);
-        save(); applyHider(); syncMapLayers(); renderList();
+        save(); recomputeElimination(); renderList();
+      });
+    });
+    bindQuestionInputs(el);
+  }
+
+  function renderQuestionFields(q) {
+    if (q.type === 'radius') {
+      return `
+        <label>Your coordinates</label>
+        <textarea class="q-coord" data-id="${q.id}" rows="2" placeholder="lat, lng">${q.lat != null ? fmtCoord(q.lat, q.lng) : ''}</textarea>
+        <div class="game-row">
+          <input class="q-radius" data-id="${q.id}" type="number" step="any" value="${q.radius}" min="0.01" />
+          <select class="q-unit" data-id="${q.id}">
+            <option value="miles"${q.unit === 'miles' ? ' selected' : ''}>miles</option>
+            <option value="kilometers"${q.unit === 'kilometers' ? ' selected' : ''}>km</option>
+          </select>
+        </div>
+        <p class="game-hint">Hider says they are:</p>
+        <div class="seg q-answer" data-id="${q.id}">
+          <button type="button" data-ans="within"${q.answer === 'within' ? ' class="active"' : ''}>Inside radius</button>
+          <button type="button" data-ans="outside"${q.answer === 'outside' ? ' class="active"' : ''}>Outside radius</button>
+        </div>`;
+    }
+    if (q.type === 'thermometer') {
+      return `
+        <label>Point A (your warm pole)</label>
+        <textarea class="q-coord-a" data-id="${q.id}" rows="2" placeholder="lat, lng">${q.latA != null ? fmtCoord(q.latA, q.lngA) : ''}</textarea>
+        <label>Point B (cold pole)</label>
+        <textarea class="q-coord-b" data-id="${q.id}" rows="2" placeholder="lat, lng">${q.latB != null ? fmtCoord(q.latB, q.lngB) : ''}</textarea>
+        <p class="game-hint">Hider says they are:</p>
+        <div class="seg q-answer" data-id="${q.id}">
+          <button type="button" data-ans="warmer"${q.answer === 'warmer' ? ' class="active"' : ''}>Warmer (closer to A)</button>
+          <button type="button" data-ans="colder"${q.answer === 'colder' ? ' class="active"' : ''}>Colder (closer to B)</button>
+        </div>`;
+    }
+    if (q.type === 'matching' && q.subtype === 'airport') {
+      const near = q.lat != null ? nearestAirport({ lat: q.lat, lng: q.lng }) : null;
+      return `
+        <label>Your coordinates</label>
+        <textarea class="q-coord" data-id="${q.id}" rows="2" placeholder="lat, lng">${q.lat != null ? fmtCoord(q.lat, q.lng) : ''}</textarea>
+        ${near ? `<p class="game-hint">Your nearest: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
+        <p class="game-hint">Only LGA, JFK, NY Skyports. Hider says:</p>
+        <div class="seg q-answer" data-id="${q.id}">
+          <button type="button" data-ans="same"${q.answer === 'same' ? ' class="active"' : ''}>Same nearest airport</button>
+          <button type="button" data-ans="different"${q.answer === 'different' ? ' class="active"' : ''}>Different airport</button>
+        </div>`;
+    }
+    return '';
+  }
+
+  function bindQuestionInputs(el) {
+    el.querySelectorAll('.q-coord').forEach(ta => {
+      ta.addEventListener('change', () => updateQuestionFromInputs(ta.dataset.id));
+      ta.addEventListener('blur', () => updateQuestionFromInputs(ta.dataset.id));
+    });
+    el.querySelectorAll('.q-coord-a, .q-coord-b').forEach(ta => {
+      ta.addEventListener('change', () => updateQuestionFromInputs(ta.dataset.id));
+      ta.addEventListener('blur', () => updateQuestionFromInputs(ta.dataset.id));
+    });
+    el.querySelectorAll('.q-radius, .q-unit').forEach(inp => {
+      inp.addEventListener('change', () => updateQuestionFromInputs(inp.dataset.id));
+    });
+    el.querySelectorAll('.q-answer button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const q = questions.find(x => x.id === btn.closest('.q-answer').dataset.id);
+        if (!q) return;
+        q.answer = btn.dataset.ans;
+        q.locked = true;
+        save(); recomputeElimination(); renderList();
       });
     });
   }
 
-  function describe(q) {
+  function updateQuestionFromInputs(id) {
+    const q = questions.find(x => x.id === id);
+    if (!q) return;
+    const root = document.querySelector(`.game-item[data-id="${id}"]`);
+    if (!root) return;
     if (q.type === 'radius') {
-      return `Center ${fmtCoord(q.lat, q.lng)}`;
+      const pt = parseCoord(root.querySelector('.q-coord')?.value);
+      if (pt) { q.lat = pt.lat; q.lng = pt.lng; }
+      q.radius = parseFloat(root.querySelector('.q-radius')?.value) || q.radius;
+      q.unit = root.querySelector('.q-unit')?.value || q.unit;
+    } else if (q.type === 'thermometer') {
+      const a = parseCoord(root.querySelector('.q-coord-a')?.value);
+      const b = parseCoord(root.querySelector('.q-coord-b')?.value);
+      if (a) { q.latA = a.lat; q.lngA = a.lng; }
+      if (b) { q.latB = b.lat; q.lngB = b.lng; }
+    } else if (q.type === 'matching') {
+      const pt = parseCoord(root.querySelector('.q-coord')?.value);
+      if (pt) { q.lat = pt.lat; q.lng = pt.lng; }
     }
-    return `A ${fmtCoord(q.latA, q.lngA)} · B ${fmtCoord(q.latB, q.lngB)}`;
-  }
-
-  function setPlaceHint(msg) {
-    const el = document.getElementById('game-hint');
-    if (el) el.textContent = msg || '';
+    save(); recomputeElimination(); syncQuestionLayers();
   }
 
   function addRadius() {
-    const radius = parseFloat(document.getElementById('game-radius-val').value) || 1;
-    const unit = document.getElementById('game-radius-unit').value || 'miles';
-    const q = {
+    const radius = parseFloat(document.getElementById('game-radius-val')?.value) || 1;
+    const unit = document.getElementById('game-radius-unit')?.value || 'miles';
+    questions.push({
       id: crypto.randomUUID(), type: 'radius', color: nextColor(),
-      lat: 40.75, lng: -73.98, radius, unit, within: null,
-    };
-    questions.push(q);
-    save();
-    placeMode = { type: 'radius', id: q.id, step: 'center' };
-    setPlaceHint('Click map to set radius center.');
-    renderList();
-    syncMapLayers();
+      lat: null, lng: null, radius, unit, answer: null, locked: false,
+    });
+    save(); renderList(); recomputeElimination();
   }
 
   function addThermometer() {
-    const q = {
+    questions.push({
       id: crypto.randomUUID(), type: 'thermometer', color: nextColor(),
-      latA: 40.76, lngA: -73.99, latB: 40.74, lngB: -73.97, warmer: null,
-    };
-    questions.push(q);
-    save();
-    placeMode = { type: 'thermometer', id: q.id, step: 'A' };
-    setPlaceHint('Click map for thermometer point A (warm pole).');
-    renderList();
-    syncMapLayers();
+      latA: null, lngA: null, latB: null, lngB: null, answer: null, locked: false,
+    });
+    save(); renderList(); recomputeElimination();
+  }
+
+  function addAirportMatch() {
+    questions.push({
+      id: crypto.randomUUID(), type: 'matching', subtype: 'airport', color: nextColor(),
+      lat: null, lng: null, answer: null, locked: false,
+    });
+    save(); renderList(); recomputeElimination();
   }
 
   function onMapClick(lngLat) {
+    if (window.JetLagHideZones?.isPicking?.()) return;
     if (!placeMode) return;
     const q = questions.find(x => x.id === placeMode.id);
     if (!q) { placeMode = null; return; }
-    if (placeMode.type === 'radius' && placeMode.step === 'center') {
+    if (placeMode.field === 'center') {
       q.lat = lngLat.lat; q.lng = lngLat.lng;
-      placeMode = null;
-      setPlaceHint('');
-    } else if (placeMode.type === 'thermometer') {
-      if (placeMode.step === 'A') {
-        q.latA = lngLat.lat; q.lngA = lngLat.lng;
-        placeMode.step = 'B';
-        setPlaceHint('Click map for thermometer point B (cold pole).');
-      } else {
-        q.latB = lngLat.lat; q.lngB = lngLat.lng;
-        placeMode = null;
-        setPlaceHint('');
-      }
+    } else if (placeMode.field === 'A') {
+      q.latA = lngLat.lat; q.lngA = lngLat.lng;
+    } else if (placeMode.field === 'B') {
+      q.latB = lngLat.lat; q.lngB = lngLat.lng;
     }
-    save(); applyHider(); syncMapLayers(); renderList();
+    placeMode = null;
+    save(); recomputeElimination(); renderList();
   }
-
-  function setHiderFromInputs() {
-    const paste = document.getElementById('game-coord-paste').value;
-    const lat = parseFloat(document.getElementById('game-lat').value);
-    const lng = parseFloat(document.getElementById('game-lng').value);
-    let pt = parseCoord(paste);
-    if (!pt && !Number.isNaN(lat) && !Number.isNaN(lng)) pt = { lat, lng };
-    if (!pt) return;
-    hider = pt;
-    document.getElementById('game-lat').value = pt.lat.toFixed(5);
-    document.getElementById('game-lng').value = pt.lng.toFixed(5);
-    applyHider();
-    syncMapLayers();
-    renderList();
-  }
-
-  function copyCoord(lngLat) {
-    const text = fmtCoord(lngLat.lat, lngLat.lng);
-    navigator.clipboard?.writeText(text);
-    setPlaceHint(`Copied ${text}`);
-  }
-
-  let mapClickBound = false;
 
   function installMapLayers(map) {
     mapRef = map;
+    if (!map.getSource('game-elimination')) {
+      map.addSource('game-elimination', { type: 'geojson', data: Geo().WORLD });
+      map.addLayer({
+        id: 'game-elimination-fill', type: 'fill', source: 'game-elimination',
+        paint: { 'fill-color': '#0f172a', 'fill-opacity': 0.45 },
+      });
+    }
     if (!map.getSource('game-questions')) {
       map.addSource('game-questions', { type: 'geojson', data: questionsGeoJSON() });
       map.addLayer({
@@ -244,8 +334,8 @@
         filter: ['==', ['get', 'kind'], 'radius-fill'],
         paint: {
           'fill-color': ['get', 'color'],
-          'fill-opacity': ['case', ['==', ['get', 'within'], true], 0.35,
-            ['==', ['get', 'within'], false], 0.08, 0.18],
+          'fill-opacity': ['case', ['==', ['get', 'answer'], 'within'], 0.35,
+            ['==', ['get', 'answer'], 'outside'], 0.12, 0.22],
         },
       });
       map.addLayer({
@@ -259,55 +349,45 @@
         paint: { 'line-color': ['get', 'color'], 'line-width': 3 },
       });
       map.addLayer({
-        id: 'game-thermo-bisector', type: 'line', source: 'game-questions',
-        filter: ['==', ['get', 'kind'], 'thermo-bisector'],
-        paint: {
-          'line-color': ['get', 'color'], 'line-width': 2, 'line-dasharray': [4, 3],
-        },
+        id: 'game-thermo-region', type: 'fill', source: 'game-questions',
+        filter: ['==', ['get', 'kind'], 'thermo-region'],
+        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.2 },
+      });
+      map.addLayer({
+        id: 'game-airport-cell', type: 'fill', source: 'game-questions',
+        filter: ['==', ['get', 'kind'], 'airport-cell'],
+        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.15 },
       });
       map.addLayer({
         id: 'game-points', type: 'circle', source: 'game-questions',
-        filter: ['in', ['get', 'kind'], ['literal', ['radius-center', 'thermo-end']]],
+        filter: ['in', ['get', 'kind'], ['literal', ['radius-center', 'thermo-end', 'airport']]],
         paint: {
-          'circle-radius': 5,
-          'circle-color': ['get', 'color'],
+          'circle-radius': ['case', ['==', ['get', 'kind'], 'airport'], 5, 6],
+          'circle-color': ['coalesce', ['get', 'color'], '#ffb020'],
           'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5,
         },
       });
-    } else {
-      syncMapLayers();
     }
     if (!mapClickBound) {
       map.on('click', e => onMapClick(e.lngLat));
-      map.on('contextmenu', e => {
-        e.preventDefault();
-        copyCoord(e.lngLat);
-      });
       mapClickBound = true;
     }
+    recomputeElimination();
   }
 
   function bindUI() {
     document.getElementById('game-add-radius')?.addEventListener('click', addRadius);
     document.getElementById('game-add-thermo')?.addEventListener('click', addThermometer);
-    document.getElementById('game-set-hider')?.addEventListener('click', setHiderFromInputs);
-    document.getElementById('game-clear-hider')?.addEventListener('click', () => {
-      hider = null;
-      for (const q of questions) {
-        if (q.type === 'radius') q.within = null;
-        else q.warmer = null;
-      }
-      renderList(); syncMapLayers();
-    });
+    document.getElementById('game-add-airport')?.addEventListener('click', addAirportMatch);
     document.getElementById('game-clear-all')?.addEventListener('click', () => {
-      if (!confirm('Remove all radius / thermometer questions?')) return;
-      questions = []; placeMode = null; save(); syncMapLayers(); renderList();
-    });
-    document.getElementById('game-coord-paste')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') setHiderFromInputs();
+      if (!confirm('Remove all questions?')) return;
+      questions = []; save(); recomputeElimination(); renderList();
     });
   }
 
   load();
-  window.JetLagGame = { installMapLayers, bindUI, renderList, syncMapLayers };
+  loadBoroughFallback();
+  window.JetLagGame = {
+    installMapLayers, bindUI, renderList, recomputeElimination, syncQuestionLayers,
+  };
 })();
