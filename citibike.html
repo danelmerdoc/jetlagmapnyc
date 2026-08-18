@@ -39,6 +39,14 @@
     width:min(360px, calc(100vw - 24px)); max-height:calc(100vh - 24px);
     overflow:hidden; display:flex; flex-direction:column;
   }
+  .panel-timer {
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    padding:10px 14px; border-bottom:1px solid var(--border);
+  }
+  .timer-readout {
+    font-variant-numeric:tabular-nums; font-weight:800; font-size:20px;
+    min-width:4.6em; letter-spacing:.04em;
+  }
   .panel-head {
     display:flex; align-items:center; justify-content:space-between; gap:8px;
     padding:10px 14px; border-bottom:1px solid var(--border); cursor:pointer; user-select:none;
@@ -47,10 +55,6 @@
   .panel-toggle { border:none; background:transparent; color:var(--text); font-size:18px; line-height:1; padding:4px 6px; cursor:pointer; }
   .panel.collapsed .panel-body { display:none; }
   .panel.collapsed .panel-head { border-bottom:none; }
-  .panel-timer {
-    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
-    padding:10px 14px; border-bottom:1px solid var(--border);
-  }
   .panel-body { padding:12px 14px 16px; overflow-y:auto; -webkit-overflow-scrolling:touch; }
   .sub { font-size:11px; color:var(--muted); margin:0 0 10px; line-height:1.4; }
   .status { font-size:12px; font-weight:700; color:var(--bike); margin:0 0 8px; }
@@ -84,17 +88,6 @@
   .hide-actions, .q-tools { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
   .game-hint { font-size:11px; color:var(--muted); margin:6px 0 0; line-height:1.4; }
   .add-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:8px 0; }
-  #cb-q-kind { flex-wrap:wrap; }
-  .timer-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:0 0 4px; }
-  .timer-readout {
-    font-variant-numeric:tabular-nums; font-weight:800; font-size:20px;
-    min-width:4.6em; letter-spacing:.04em;
-  }
-  .q-cost {
-    margin-left:auto; font-size:10px; font-weight:600; color:var(--muted);
-    background:var(--btn); border-radius:999px; padding:3px 8px; white-space:nowrap;
-  }
-  .q-subtype { margin-bottom:8px; }
   .cb-item { margin:10px 0; }
   .cb-item-head {
     display:flex; align-items:center; gap:8px; padding:6px 2px; cursor:pointer; user-select:none;
@@ -211,39 +204,30 @@
       <button type="button" class="game-btn small secondary" id="cb-clear-focus">Unselect station</button>
     </div>
 
-
     <div class="section">Questions</div>
     <p class="sub">Open a question to place pins on the map. Paste coords (decimal or DMS), drag pins, or use live location. Stations are removed only when their entire hide zone is ruled out.</p>
-    <div class="seg add-grid" id="cb-q-kind">
-      <button type="button" data-kind="radius" class="active">Radius</button>
-      <button type="button" data-kind="thermometer">Thermometer</button>
-      <button type="button" data-kind="matching">Matching</button>
-      <button type="button" data-kind="measuring">Measuring</button>
+    <div class="game-row">
+      <input id="cb-radius-val" type="number" step="any" value="1" min="0.01" inputmode="decimal" />
+      <select id="cb-radius-unit">
+        <option value="miles" selected>miles</option>
+        <option value="kilometers">km</option>
+      </select>
     </div>
-    <div id="cb-radius-opts">
-      <div class="game-row">
-        <input id="cb-radius-val" type="number" step="any" value="1" min="0.01" inputmode="decimal" />
-        <select id="cb-radius-unit">
-          <option value="miles" selected>miles</option>
-          <option value="kilometers">km</option>
-        </select>
-      </div>
+    <div class="add-grid">
+      <button type="button" class="game-btn" id="cb-add-radius">+ Radius</button>
+      <button type="button" class="game-btn secondary" id="cb-add-thermo">+ Thermo</button>
+      <button type="button" class="game-btn secondary" id="cb-add-borough">+ Borough</button>
+      <button type="button" class="game-btn secondary" id="cb-add-airport">+ Airport</button>
+      <button type="button" class="game-btn secondary" id="cb-add-coast" style="grid-column:1 / -1">+ Coastline</button>
     </div>
-    <div id="cb-q-subrow" hidden>
-      <label id="cb-q-sublabel" for="cb-q-subtype">Is your … the same as mine?</label>
-      <select id="cb-q-subtype"></select>
-    </div>
-    <p class="game-hint" id="cb-q-cost-hint">Radar · draw 2 pick 1</p>
-    <button type="button" class="game-btn" id="cb-add-question">+ Add question</button>
-    <p class="game-hint" id="cb-cost-total">Cards drawn: 0</p>
     <div id="cb-game-list"></div>
     <button type="button" class="game-btn secondary" id="cb-clear-all">Clear all questions</button>
-    <p class="game-hint">Matching airports: Skyports, LaGuardia, JFK. Measuring airports: LGA and JFK only. Jersey counts as a borough.</p>
+    <p class="game-hint">Airports: NY Skyports Seaplane Base, LaGuardia, JFK. Jersey counts as a borough.</p>
   </div>
 </div>
 <script src="config.js"></script>
 <script src="geo-utils.js?v=8"></script>
-<script src="citibike-game.js?v=17"></script>
-<script src="citibike-app.js?v=14"></script>
+<script src="citibike-game.js?v=13"></script>
+<script src="citibike-app.js?v=15"></script>
 </body>
 </html>

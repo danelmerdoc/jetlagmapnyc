@@ -175,7 +175,7 @@
     ['cb-focus-outside-fill', 'cb-focus-fill', 'cb-focus-line'].forEach(id => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', foc);
     });
-    const elimVis = !focusStation ? 'visible' : 'none';
+    const elimVis = !focusStation && Game().getQuestions().some(q => q.answer != null) ? 'visible' : 'none';
     if (map.getLayer('cb-elim-fill')) map.setLayoutProperty('cb-elim-fill', 'visibility', elimVis);
     if (map.getLayer('cb-possible-border')) map.setLayoutProperty('cb-possible-border', 'visibility', elimVis);
   }
@@ -204,7 +204,7 @@
     for (const q of Game().getQuestions()) {
       if (!q.open) continue;
       Game().ensureQuestionCoords(q.id, center);
-      if (Game().usesCenter(q) && q.lat != null) {
+      if ((q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') && q.lat != null) {
         const m = new mapboxgl.Marker({ element: pinEl(q.color), draggable: true, anchor: 'bottom' })
           .setLngLat([q.lng, q.lat])
           .addTo(map);
