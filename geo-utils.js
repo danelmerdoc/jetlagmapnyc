@@ -63,19 +63,21 @@ window.JetLagGeo = (function () {
     const b = turf.point([q.lngB, q.latB]);
     const mid = turf.midpoint(a, b);
     const abBearing = turf.bearing(a, b);
-    const alongBisector = abBearing + 90;
-    const side = warmer ? abBearing : abBearing + 180;
-    const R = 400;
-    const pLeft = turf.destination(mid, R, alongBisector, { units: 'kilometers' });
-    const pRight = turf.destination(mid, R, alongBisector + 180, { units: 'kilometers' });
-    const pFarLeft = turf.destination(pLeft, R, side, { units: 'kilometers' });
-    const pFarRight = turf.destination(pRight, R, side, { units: 'kilometers' });
+    const perp = abBearing + 90;
+    const keep = warmer ? abBearing : abBearing + 180;
+    // Short bisector segment — long chords bend in lat/lng and put A and B on the same side.
+    const bisKm = 80;
+    const extKm = 2000;
+    const b1 = turf.destination(mid, bisKm, perp, { units: 'kilometers' });
+    const b2 = turf.destination(mid, bisKm, perp + 180, { units: 'kilometers' });
+    const f1 = turf.destination(b1, extKm, keep, { units: 'kilometers' });
+    const f2 = turf.destination(b2, extKm, keep, { units: 'kilometers' });
     return turf.polygon([[
-      pLeft.geometry.coordinates,
-      pRight.geometry.coordinates,
-      pFarRight.geometry.coordinates,
-      pFarLeft.geometry.coordinates,
-      pLeft.geometry.coordinates,
+      b1.geometry.coordinates,
+      b2.geometry.coordinates,
+      f2.geometry.coordinates,
+      f1.geometry.coordinates,
+      b1.geometry.coordinates,
     ]]);
   }
 
