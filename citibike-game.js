@@ -136,38 +136,37 @@
     return { airport: best, miles: bestD };
   }
 
+  function hideZoneFeature(st, steps = 32) {
+    return turf.circle([st.lng, st.lat], hideRadiusMi, { steps, units: 'miles' });
+  }
+
   function circleReachesPoly(st, poly) {
     if (!poly) return false;
     try {
-      return turf.booleanIntersects(
-        turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 16, units: 'miles' }),
-        poly,
-      );
+      return turf.booleanIntersects(hideZoneFeature(st, 24), poly);
     } catch (_) { return false; }
   }
 
   function circleFullyInsidePoly(st, poly) {
     if (!poly) return false;
     try {
-      return turf.booleanContains(
-        poly,
-        turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 16, units: 'miles' }),
-      );
+      return turf.booleanContains(poly, hideZoneFeature(st, 24));
     } catch (_) { return false; }
   }
 
   function thermoStraddles(st, q) {
-    const a = turf.point([q.lngA, q.latA]);
-    const b = turf.point([q.lngB, q.latB]);
-    const mid = turf.midpoint(a, b);
-    const bearing = turf.bearing(a, b);
-    const stPt = turf.point([st.lng, st.lat]);
-    const distToMid = turf.distance(stPt, mid, { units: 'miles' });
-    const bearToSt = turf.bearing(mid, stPt);
-    let diff = bearToSt - (bearing + 90);
-    while (diff > 180) diff -= 360;
-    while (diff < -180) diff += 360;
-    return Math.abs(Math.sin(diff * Math.PI / 180) * distToMid) <= hideRadiusMi + 1e-9;
+    const region = Geo().thermometerRegion(q, true);
+    const anti = Geo().thermometerRegion(q, false);
+    const hz = hideZoneFeature(st, 24);
+    try {
+      return turf.booleanIntersects(hz, region) && turf.booleanIntersects(hz, anti);
+    } catch (_) { return true; }
+  }
+
+  function hideZoneMeetsThermoSide(st, q, warmerSide) {
+    try {
+      return turf.booleanIntersects(hideZoneFeature(st, 24), Geo().thermometerRegion(q, warmerSide));
+    } catch (_) { return true; }
   }
 
   function possibleAirportIds(st) {
@@ -189,20 +188,27 @@
     if (q.answer == null) return true;
     if (q.type === 'radius') {
       if (q.lat == null || q.lng == null) return true;
-      const d = distMi(st, { lat: q.lat, lng: q.lng });
       const r = radiusMiles(q);
-      const h = hideRadiusMi;
-      if (q.answer === 'within') return d - h <= r + 1e-9;
-      return d + h > r + 1e-9;
+      const disk = turf.circle([q.lng, q.lat], r, { steps: 64, units: 'miles' });
+      const hz = hideZoneFeature(st, 32);
+      try {
+        if (q.answer === 'within') return turf.booleanIntersects(hz, disk);
+        return !turf.booleanContains(disk, hz);
+      } catch (_) {
+        const d = distMi(st, { lat: q.lat, lng: q.lng });
+        const h = hideRadiusMi;
+        if (q.answer === 'within') return d - h <= r + 1e-9;
+        return d + h > r + 1e-9;
+      }
     }
     if (q.type === 'thermometer') {
       if (q.latA == null || q.latB == null) return true;
       if (thermoStraddles(st, q)) return true;
-      const closerToEnd = distMi(st, { lat: q.latB, lng: q.lngB }) < distMi(st, { lat: q.latA, lng: q.lngA });
-      return q.answer === 'warmer' ? closerToEnd : !closerToEnd;
+      return hideZoneMeetsThermoSide(st, q, q.answer === 'warmer');
     }
     if (q.type === 'borough') {
       const poly = boroughPolys[q.borough];
+      if (!poly) return true;
       if (q.answer === 'same') {
         if (st.borough === q.borough) return true;
         return circleReachesPoly(st, poly);
@@ -219,11 +225,19 @@
       return possible.some(id => id !== seeker.id);
     }
     if (q.type === 'coastline') {
-      if (q.lat == null) return true;
+      if (q.lat == null || !coastFeature) return true;
       const measure = distToCoast(q.lat, q.lng);
-      const d = st.coastMi != null ? st.coastMi : distToCoast(st.lat, st.lng);
-      if (q.answer === 'closer') return d - hideRadiusMi <= measure + 1e-9;
-      return d + hideRadiusMi >= measure - 1e-9;
+      const hz = hideZoneFeature(st, 24);
+      try {
+        const band = turf.buffer(coastFeature, measure, { units: 'miles', steps: 16 });
+        if (!band) return true;
+        if (q.answer === 'closer') return turf.booleanIntersects(hz, band);
+        return !turf.booleanContains(band, hz);
+      } catch (_) {
+        const d = st.coastMi != null ? st.coastMi : distToCoast(st.lat, st.lng);
+        if (q.answer === 'closer') return d - hideRadiusMi <= measure + 1e-9;
+        return d + hideRadiusMi >= measure - 1e-9;
+      }
     }
     return true;
   }
@@ -243,7 +257,7 @@
         id: st.id,
         name: st.name,
         borough: st.borough,
-        r20: meters / mPerPxZ20 / Math.cos(st.lat * Math.PI / 180),
+        r20: (meters / mPerPxZ20) * Math.cos(st.lat * Math.PI / 180),
       },
       geometry: { type: 'Point', coordinates: [st.lng, st.lat] },
     }));
@@ -292,46 +306,19 @@
         area = Geo().modifyMapData(area, Geo().thermometerRegion(q, q.answer === 'warmer'), true);
       } else if (q.type === 'borough') {
         const poly = boroughPolys[q.borough];
-        if (poly) {
-          try {
-            if (q.answer === 'same') {
-              const expanded = turf.buffer(poly, hideRadiusMi, { units: 'miles', steps: 16 });
-              if (expanded) area = Geo().modifyMapData(area, expanded, true);
-            } else {
-              const shrunk = turf.buffer(poly, -hideRadiusMi, { units: 'miles', steps: 16 });
-              if (shrunk) area = Geo().modifyMapData(area, shrunk, false);
-            }
-          } catch (_) {
-            area = Geo().modifyMapData(area, poly, q.answer === 'same');
-          }
-        }
+        if (poly) area = Geo().modifyMapData(area, poly, q.answer === 'same');
       } else if (q.type === 'airport' && q.lat != null) {
         const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, AIRPORTS);
-        if (cell) {
-          try {
-            if (q.answer === 'same') {
-              const expanded = turf.buffer(cell, hideRadiusMi, { units: 'miles', steps: 16 });
-              if (expanded) area = Geo().modifyMapData(area, expanded, true);
-            } else {
-              const shrunk = turf.buffer(cell, -hideRadiusMi, { units: 'miles', steps: 16 });
-              if (shrunk) area = Geo().modifyMapData(area, shrunk, false);
-            }
-          } catch (_) {
-            area = Geo().modifyMapData(area, cell, q.answer === 'same');
-          }
-        }
+        if (cell) area = Geo().modifyMapData(area, cell, q.answer === 'same');
       } else if (q.type === 'coastline' && q.lat != null && coastFeature) {
         const measure = distToCoast(q.lat, q.lng);
         try {
           if (q.answer === 'closer') {
-            const buf = turf.buffer(coastFeature, measure + hideRadiusMi, { units: 'miles', steps: 16 });
+            const buf = turf.buffer(coastFeature, measure, { units: 'miles', steps: 16 });
             if (buf) area = Geo().modifyMapData(area, buf, true);
           } else {
-            const inner = measure - hideRadiusMi;
-            if (inner > 0.001) {
-              const buf = turf.buffer(coastFeature, inner, { units: 'miles', steps: 16 });
-              if (buf) area = Geo().modifyMapData(area, buf, false);
-            }
+            const buf = turf.buffer(coastFeature, measure, { units: 'miles', steps: 16 });
+            if (buf) area = Geo().modifyMapData(area, buf, false);
           }
         } catch (_) { /* skip coastline mask */ }
       }
