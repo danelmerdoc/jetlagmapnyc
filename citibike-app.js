@@ -310,7 +310,6 @@
       await Game().initStationData(raw);
       populateSearch();
       refreshMap();
-      snapAirportIcons();
     } catch (e) {
       setStatus('Could not load Citi Bike stations.');
       console.error(e);
@@ -319,8 +318,11 @@
 
   function snapAirportIcons() {
     if (!map) return;
-    const moved = Geo().snapAirportsFromMap(Game().AIRPORTS, map);
-    if (moved) Game().airportsMoved();
+    Geo().snapAirportsToMapbox(Game().AIRPORTS, window.MAPBOX_TOKEN)
+      .then((airports) => {
+        if (airports) Game().airportsMoved();
+      })
+      .catch(() => {});
   }
 
   function findStation(text) {

@@ -476,27 +476,30 @@ window.JetLagGeo = (function () {
   }
 
   const AIRPORT_NAME_NEEDLES = {
-    skyports: ['skyport', 'seaplane', 'e 23', 'east 23', '23rd'],
-    lga: ['laguardia', 'lga'],
-    jfk: ['kennedy', 'jfk', 'idlewild'],
+    skyports: ['skyports', 'seaplane'],
+    lga: ['laguardia'],
+    jfk: ['kennedy'],
   };
 
-  const AIRPORT_GEOCODE_Q = {
-    skyports: 'NY Skyports Seaplane Base, New York',
-    lga: 'LaGuardia Airport, New York',
-    jfk: 'John F. Kennedy International Airport, New York',
+  const AIRPORT_SEARCH_Q = {
+    skyports: 'New York Skyports Seaplane Base',
+    lga: 'LaGuardia Airport',
+    jfk: 'John F. Kennedy International Airport',
   };
 
-  function scoreMapboxAirport(airport, props, distM) {
-    const name = (props?.name || '').toLowerCase();
-    const maki = (props?.maki || props?.class || '').toLowerCase();
-    let s = 0;
-    if (maki === 'airport' || maki === 'aerodrome') s += 50;
-    if (maki === 'heliport' || maki === 'airfield') s += 15;
+  function isAirportPoi(props) {
+    const maki = String(props?.maki || '').toLowerCase();
+    const cats = props?.poi_category || [];
+    const category = String(props?.category || props?.class || '').toLowerCase();
+    return maki === 'airport'
+      || (Array.isArray(cats) && cats.includes('airport'))
+      || category.includes('airport');
+  }
+
+  function airportNameMatches(airport, name) {
+    const n = String(name || '').toLowerCase();
     const needles = AIRPORT_NAME_NEEDLES[airport.id] || [airport.name.toLowerCase()];
-    if (needles.some(n => name.includes(n))) s += 100;
-    s -= (Number(distM) || 0) * 0.01;
-    return s;
+    return needles.some(needle => n.includes(needle));
   }
 
   function featureLngLat(f) {
@@ -510,106 +513,62 @@ window.JetLagGeo = (function () {
   }
 
   /**
-   * Snap airports onto the icons the loaded Mapbox style is actually drawing.
-   * Standard-style airport labels are not the same points as streets-v8 tilequery.
+   * Snap only to rendered Mapbox airport POI icons whose names match LGA / JFK /
+   * Skyports. Ignores parking, marinas, hotels, and other airports.
    */
   function snapAirportsFromMap(airports, map) {
     if (!map || !airports?.length) return false;
     let feats = [];
     try { feats = (map.queryRenderedFeatures() || []).slice(); } catch (_) { feats = []; }
-    const sources = map.getStyle()?.sources || {};
-    for (const [id, src] of Object.entries(sources)) {
-      if (src.type === 'geojson') {
-        try { feats.push(...(map.querySourceFeatures(id) || [])); } catch (_) { /* skip */ }
-      } else if (src.type === 'vector') {
-        for (const layer of ['poi_label', 'poi', 'place_label', 'airport_label']) {
-          try { feats.push(...(map.querySourceFeatures(id, { sourceLayer: layer }) || [])); } catch (_) { /* skip */ }
-        }
-      }
-    }
     let moved = false;
     for (const a of airports) {
       let best = null;
-      let bestScore = 40;
       for (const f of feats) {
         const p = f.properties || {};
-        const name = p.name || p.name_en || p.name_script || f.text || '';
+        const name = p.name || p.name_en || '';
+        if (!isAirportPoi(p) || !airportNameMatches(a, name)) continue;
         const c = featureLngLat(f);
         if (!c) continue;
-        const score = scoreMapboxAirport(a, { name, maki: p.maki || p.class || p.type }, 0);
-        if (score > bestScore) { bestScore = score; best = c; }
+        best = c;
+        break;
       }
       if (best && (Math.abs(best[0] - a.lng) > 1e-6 || Math.abs(best[1] - a.lat) > 1e-6)) {
         a.lng = best[0];
         a.lat = best[1];
         moved = true;
-      } else if (best) {
-        a.lng = best[0];
-        a.lat = best[1];
       }
     }
     return moved;
   }
 
-  const TILEQUERY = 'https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery';
-
   /**
-   * Align airport pins to Mapbox Streets poi_label icons (same source as Citi Bike
-   * station coords). This is the authoritative POI location on Standard maps.
-   */
-  async function snapAirportsViaTilequery(airports, token) {
-    if (!token || String(token).indexOf('YOUR_MAPBOX') === 0 || !airports?.length) return airports;
-    await Promise.all(airports.map(async (a) => {
-      try {
-        const url = `${TILEQUERY}/${a.lng},${a.lat}.json`
-          + '?radius=1200&limit=25&layers=poi_label'
-          + `&access_token=${encodeURIComponent(token)}`;
-        const data = await fetch(url).then(r => r.ok ? r.json() : null);
-        let best = null;
-        let bestScore = 40;
-        for (const f of data?.features || []) {
-          const p = f.properties || {};
-          const distM = p.tilequery?.distance ?? Infinity;
-          if (distM > 1200) continue;
-          const c = featureLngLat(f);
-          if (!c) continue;
-          const score = scoreMapboxAirport(a, { name: p.name || '', maki: p.maki || p.class }, distM);
-          if (score > bestScore) { bestScore = score; best = c; }
-        }
-        if (best) { a.lng = best[0]; a.lat = best[1]; }
-      } catch (_) { /* keep seed */ }
-    }));
-    return airports;
-  }
-
-  /**
-   * Geocode each airport with Mapbox's own place result (the pin the geocoder
-   * shares with Standard maps), then optionally refine from the live map.
+   * Align each airport to Mapbox Search Box POIs (poi_category=airport).
+   * Streets-v8 tilequery is the wrong source — it returns terminal shops and
+   * the Skyport parking garage, not the airport pins.
    */
   async function snapAirportsToMapbox(airports, token) {
     if (!token || String(token).indexOf('YOUR_MAPBOX') === 0 || !airports?.length) return airports;
     await Promise.all(airports.map(async (a) => {
       try {
-        const q = encodeURIComponent(AIRPORT_GEOCODE_Q[a.id] || a.name);
-        const geo = 'https://api.mapbox.com/geocoding/v5/mapbox.places/'
-          + `${q}.json?proximity=${a.lng},${a.lat}&limit=5`
+        const q = encodeURIComponent(AIRPORT_SEARCH_Q[a.id] || a.name);
+        const url = 'https://api.mapbox.com/search/searchbox/v1/forward'
+          + `?q=${q}&proximity=${a.lng},${a.lat}&limit=5`
+          + '&poi_category=airport&types=poi'
           + `&access_token=${encodeURIComponent(token)}`;
-        const gd = await fetch(geo).then(r => r.ok ? r.json() : null);
-        const ranked = (gd?.features || [])
-          .map(f => ({
-            f,
-            score: scoreMapboxAirport(a, {
-              name: `${f.text || ''} ${f.place_name || ''}`,
-              maki: f.properties?.maki || f.properties?.category,
-            }, 0),
-          }))
-          .sort((x, y) => y.score - x.score);
-        const hit = ranked.find(x => x.score >= 100)?.f || ranked[0]?.f;
+        const data = await fetch(url).then(r => r.ok ? r.json() : null);
+        const hit = (data?.features || []).find((f) => {
+          const p = f.properties || {};
+          return isAirportPoi(p) && airportNameMatches(a, p.name || p.full_address || '');
+        });
         const c = featureLngLat(hit);
         if (c) { a.lng = c[0]; a.lat = c[1]; }
-      } catch (_) { /* keep the seed coordinate */ }
+      } catch (_) { /* keep the Mapbox POI seed */ }
     }));
     return airports;
+  }
+
+  async function snapAirportsViaTilequery(airports, token) {
+    return snapAirportsToMapbox(airports, token);
   }
 
   function unionMany(features) {
