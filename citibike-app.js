@@ -130,6 +130,20 @@
     return Geo().holedMask(Game().stationCircle(focusStation));
   }
 
+  function updateMergedZones() {
+    if (!map?.getSource('cb-merged')) return;
+    if (zoneMode !== 'merged' || focusStation) {
+      map.getSource('cb-merged').setData({ type: 'FeatureCollection', features: [] });
+      return;
+    }
+    const active = Game().getActiveStations();
+    const b = map.getBounds();
+    const bbox = b ? [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] : null;
+    const data = Game().mergedZonesGeoJSON(active, bbox);
+    map.getSource('cb-merged').setData(data);
+    setStatus(`${active.length} / ${Game().stations.length} stations possible`);
+  }
+
   function scheduleMergedUpdate() {
     clearTimeout(mergeTimer);
     if (zoneMode !== 'merged' || focusStation) {
@@ -138,14 +152,7 @@
       }
       return;
     }
-    mergeTimer = setTimeout(() => {
-      const active = Game().getActiveStations();
-      const b = map.getBounds();
-      const bbox = b ? [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] : null;
-      const data = Game().mergedZonesGeoJSON(active, bbox);
-      if (map?.getSource('cb-merged')) map.getSource('cb-merged').setData(data);
-      setStatus(`${active.length} / ${Game().stations.length} stations possible`);
-    }, 200);
+    mergeTimer = setTimeout(updateMergedZones, 120);
   }
 
   function syncZoneVisibility() {
@@ -243,7 +250,8 @@
       );
     }
     syncZoneVisibility();
-    scheduleMergedUpdate();
+    if (zoneMode === 'merged' && !focusStation) updateMergedZones();
+    else scheduleMergedUpdate();
     syncMarkers();
     updateLiveBanner();
     if (map.doubleClickZoom) {
@@ -661,6 +669,7 @@
       zoneMode = b.dataset.mode;
       document.querySelectorAll('#cb-zone-mode button').forEach(x => x.classList.toggle('active', x === b));
       refreshMap();
+      if (zoneMode === 'merged') updateMergedZones();
     });
 
     document.getElementById('cb-toggle-transit')?.addEventListener('change', e => {

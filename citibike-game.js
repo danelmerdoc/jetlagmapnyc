@@ -275,30 +275,35 @@
     const empty = { type: 'FeatureCollection', features: [] };
     let list = activeStations;
     if (bbox) {
-      const pad = hideRadiusMi / 50;
+      // bbox is degrees; convert hide radius from miles to degrees for padding
+      const pad = (hideRadiusMi / 69) * 1.15;
       list = activeStations.filter(s =>
         s.lng >= bbox[0] - pad && s.lat >= bbox[1] - pad &&
         s.lng <= bbox[2] + pad && s.lat <= bbox[3] + pad);
     }
     if (!list.length) return empty;
-    const circles = list.map(s => {
-      const c = stationCircle(s);
-      c.properties = { k: 1 };
-      return c;
-    });
-    const fc = turf.featureCollection(circles);
-    try {
-      if (typeof turf.dissolve === 'function') {
-        const d = turf.dissolve(fc, { propertyName: 'k' });
-        if (d) return d.type === 'FeatureCollection' ? d : { type: 'FeatureCollection', features: [d] };
-      }
-    } catch (_) { /* fall through */ }
+
+    const steps = list.length > 400 ? 8 : list.length > 150 ? 12 : 16;
+
     try {
       const mp = turf.multiPoint(list.map(s => [s.lng, s.lat]));
-      const buf = turf.buffer(mp, hideRadiusMi, { units: 'miles', steps: 8 });
-      if (buf) return buf.type === 'FeatureCollection' ? buf : { type: 'FeatureCollection', features: [buf] };
+      const merged = turf.buffer(mp, hideRadiusMi, { units: 'miles', steps });
+      if (merged?.geometry?.coordinates?.length) {
+        merged.properties = { kind: 'merged-zones' };
+        return { type: 'FeatureCollection', features: [merged] };
+      }
     } catch (_) { /* fall through */ }
-    return fc;
+
+    try {
+      const circles = list.map(s => stationCircle(s));
+      const merged = Geo().unionMany(circles);
+      if (merged?.geometry?.coordinates?.length) {
+        merged.properties = { kind: 'merged-zones' };
+        return { type: 'FeatureCollection', features: [merged] };
+      }
+    } catch (_) { /* fall through */ }
+
+    return overlapZonesGeoJSON(list);
   }
 
   function possibleAreaFromQuestions() {
