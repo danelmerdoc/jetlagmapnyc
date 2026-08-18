@@ -21,6 +21,8 @@
   let lastTap = { t: 0, lng: 0, lat: 0 };
 
   const STYLE = 'mapbox://styles/mapbox/standard';
+  /** Mapbox simplifies GeoJSON by default (~0.375px), which shrinks thousands of hide circles. */
+  const ZONE_GEOJSON_OPTS = { tolerance: 0 };
 
   function elimStyle() {
     if (theme === 'dark') {
@@ -383,26 +385,40 @@
       map.addSource('cb-stations', { type: 'geojson', data: stationFeaturesGeoJSON() });
     }
     if (!map.getSource('cb-zones-overlap')) {
-      map.addSource('cb-zones-overlap', { type: 'geojson', data: overlapZonesGeoJSON() });
+      map.addSource('cb-zones-overlap', {
+        type: 'geojson', data: overlapZonesGeoJSON(), ...ZONE_GEOJSON_OPTS,
+      });
     }
     if (!map.getSource('cb-merged')) {
-      map.addSource('cb-merged', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('cb-merged', {
+        type: 'geojson', data: { type: 'FeatureCollection', features: [] }, ...ZONE_GEOJSON_OPTS,
+      });
     }
     if (!map.getSource('cb-focus-outside')) {
-      map.addSource('cb-focus-outside', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('cb-focus-outside', {
+        type: 'geojson', data: { type: 'FeatureCollection', features: [] }, ...ZONE_GEOJSON_OPTS,
+      });
     }
     if (!map.getSource('cb-focus')) {
-      map.addSource('cb-focus', { type: 'geojson', data: focusGeoJSON() });
+      map.addSource('cb-focus', { type: 'geojson', data: focusGeoJSON(), ...ZONE_GEOJSON_OPTS });
     }
     if (!map.getSource('cb-questions')) {
       map.addSource('cb-questions', { type: 'geojson', data: Game().questionsGeoJSON() });
     }
     if (!map.getSource('cb-elim')) {
-      map.addSource('cb-elim', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('cb-elim', {
+        type: 'geojson', data: { type: 'FeatureCollection', features: [] }, ...ZONE_GEOJSON_OPTS,
+      });
     }
     if (!map.getSource('cb-possible')) {
-      map.addSource('cb-possible', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('cb-possible', {
+        type: 'geojson', data: { type: 'FeatureCollection', features: [] }, ...ZONE_GEOJSON_OPTS,
+      });
     }
+
+    ['cb-zones-overlap', 'cb-zones-halo'].forEach(id => {
+      if (map.getLayer(id)) map.removeLayer(id);
+    });
 
     if (!map.getLayer('cb-elim-fill')) {
       addLayer({

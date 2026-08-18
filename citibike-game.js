@@ -264,7 +264,7 @@
     return {
       type: 'FeatureCollection',
       features: activeSet.map(st => {
-        const c = turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 32, units: 'miles' });
+        const c = stationCircle(st);
         c.properties = { id: st.id, name: st.name };
         return c;
       }),
@@ -282,7 +282,7 @@
     }
     if (!list.length) return empty;
     const circles = list.map(s => {
-      const c = turf.circle([s.lng, s.lat], hideRadiusMi, { steps: 8, units: 'miles' });
+      const c = stationCircle(s);
       c.properties = { k: 1 };
       return c;
     });
