@@ -22,7 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Create Mapbox config
-        run: printf '%s\n' "window.MAPBOX_TOKEN = '${{ secrets.MAPBOX_TOKEN }}';" > config.js
+        run: |
+          printf '%s\n' "window.MAPBOX_TOKEN = '${{ secrets.MAPBOX_TOKEN }}';" > config.js
+          if [ -n "${{ secrets.THUNDERFOREST_KEY }}" ]; then
+            printf '%s\n' "window.THUNDERFOREST_KEY = '${{ secrets.THUNDERFOREST_KEY }}';" >> config.js
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .

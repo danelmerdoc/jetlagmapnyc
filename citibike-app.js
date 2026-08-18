@@ -32,12 +32,55 @@
   function zoneStyle() {
     if (theme === 'dark') {
       return {
-        fill: '#22d3ee', fillOpacity: 0.24, stroke: '#67e8f9', strokeOpacity: 0.9, focusStroke: '#a5f3fc',
+        fill: '#ffc107',
+        fillOpacity: 0.74,
+        stroke: '#ffeb3b',
+        strokeOpacity: 1,
+        strokeWidth: 4,
+        focusStroke: '#fff59d',
+        focusFillOpacity: 0.8,
+        haloFill: '#ff9100',
+        haloOpacity: 0.48,
+        emissive: 0.92,
       };
     }
     return {
-      fill: '#ffb020', fillOpacity: 0.16, stroke: '#e69500', strokeOpacity: 0.55, focusStroke: '#ffb020',
+      fill: '#ffb020',
+      fillOpacity: 0.22,
+      stroke: '#e69500',
+      strokeOpacity: 0.75,
+      strokeWidth: 2,
+      focusStroke: '#ffb020',
+      focusFillOpacity: 0.28,
+      haloFill: '#ffb020',
+      haloOpacity: 0,
+      emissive: 0,
     };
+  }
+
+  function applyZonePaint(zones) {
+    if (!map) return;
+    const set = (id, prop, val) => { if (map.getLayer(id)) map.setPaintProperty(id, prop, val); };
+    const mergedOpacity = zones.fillOpacity + (theme === 'dark' ? 0.12 : 0.06);
+    set('cb-zones-halo', 'circle-color', zones.haloFill);
+    set('cb-zones-halo', 'circle-opacity', zones.haloOpacity);
+    set('cb-zones-overlap', 'circle-color', zones.fill);
+    set('cb-zones-overlap', 'circle-opacity', zones.fillOpacity);
+    set('cb-zones-overlap', 'circle-stroke-color', zones.stroke);
+    set('cb-zones-overlap', 'circle-stroke-opacity', zones.strokeOpacity);
+    set('cb-zones-overlap', 'circle-stroke-width', zones.strokeWidth);
+    set('cb-zones-overlap', 'circle-emissive-strength', zones.emissive);
+    set('cb-merged-fill', 'fill-color', zones.fill);
+    set('cb-merged-fill', 'fill-opacity', mergedOpacity);
+    set('cb-merged-fill', 'fill-emissive-strength', zones.emissive);
+    set('cb-merged-line', 'line-color', zones.stroke);
+    set('cb-merged-line', 'line-opacity', zones.strokeOpacity);
+    set('cb-merged-line', 'line-width', zones.strokeWidth);
+    set('cb-focus-fill', 'fill-color', zones.fill);
+    set('cb-focus-fill', 'fill-opacity', zones.focusFillOpacity);
+    set('cb-focus-fill', 'fill-emissive-strength', zones.emissive);
+    set('cb-focus-line', 'line-color', zones.focusStroke);
+    set('cb-focus-line', 'line-width', theme === 'dark' ? 4 : 3.2);
   }
 
   function applyBasemap() {
@@ -287,17 +330,7 @@
     set('cb-possible-border', 'line-width', elim.borderWidth);
     set('cb-focus-outside-fill', 'fill-color', elim.fill);
     set('cb-focus-outside-fill', 'fill-opacity', elim.fillOpacity + 0.08);
-    set('cb-zones-overlap', 'circle-color', zones.fill);
-    set('cb-zones-overlap', 'circle-opacity', zones.fillOpacity);
-    set('cb-zones-overlap', 'circle-stroke-color', zones.stroke);
-    set('cb-zones-overlap', 'circle-stroke-opacity', zones.strokeOpacity);
-    set('cb-merged-fill', 'fill-color', zones.fill);
-    set('cb-merged-fill', 'fill-opacity', zones.fillOpacity + 0.06);
-    set('cb-merged-line', 'line-color', zones.stroke);
-    set('cb-merged-line', 'line-opacity', zones.strokeOpacity);
-    set('cb-focus-fill', 'fill-color', zones.fill);
-    set('cb-focus-fill', 'fill-opacity', zones.fillOpacity + 0.04);
-    set('cb-focus-line', 'line-color', zones.focusStroke);
+    applyZonePaint(zones);
     set('cb-stations-active', 'circle-color', stationFill);
     set('cb-stations-active', 'circle-stroke-color', casing);
     set('cb-questions-airports', 'circle-stroke-color', casing);
@@ -381,6 +414,18 @@
         },
       });
     }
+    if (!map.getLayer('cb-zones-halo')) {
+      addLayer({
+        id: 'cb-zones-halo', type: 'circle', source: 'cb-stations',
+        paint: {
+          'circle-radius': ['*', ['interpolate', ['exponential', 2], ['zoom'], 0, 0, 20, ['get', 'r20']], 1.14],
+          'circle-color': zones.haloFill,
+          'circle-opacity': zones.haloOpacity,
+          'circle-blur': 0.35,
+          'circle-pitch-alignment': 'map',
+        },
+      });
+    }
     if (!map.getLayer('cb-zones-overlap')) {
       addLayer({
         id: 'cb-zones-overlap', type: 'circle', source: 'cb-stations',
@@ -390,7 +435,8 @@
           'circle-opacity': zones.fillOpacity,
           'circle-stroke-color': zones.stroke,
           'circle-stroke-opacity': zones.strokeOpacity,
-          'circle-stroke-width': 1.4,
+          'circle-stroke-width': zones.strokeWidth,
+          'circle-emissive-strength': zones.emissive,
           'circle-pitch-alignment': 'map',
         },
       });
@@ -398,11 +444,19 @@
     if (!map.getLayer('cb-merged-fill')) {
       addLayer({
         id: 'cb-merged-fill', type: 'fill', source: 'cb-merged',
-        paint: { 'fill-color': zones.fill, 'fill-opacity': zones.fillOpacity + 0.06 },
+        paint: {
+          'fill-color': zones.fill,
+          'fill-opacity': zones.fillOpacity + (theme === 'dark' ? 0.12 : 0.06),
+          'fill-emissive-strength': zones.emissive,
+        },
       });
       addLayer({
         id: 'cb-merged-line', type: 'line', source: 'cb-merged',
-        paint: { 'line-color': zones.stroke, 'line-width': 1.6, 'line-opacity': zones.strokeOpacity },
+        paint: {
+          'line-color': zones.stroke,
+          'line-width': zones.strokeWidth,
+          'line-opacity': zones.strokeOpacity,
+        },
       });
     }
     if (!map.getLayer('cb-focus-outside-fill')) {
@@ -414,12 +468,19 @@
       addLayer({
         id: 'cb-focus-fill', type: 'fill', source: 'cb-focus',
         layout: { visibility: 'none' },
-        paint: { 'fill-color': zones.fill, 'fill-opacity': zones.fillOpacity + 0.04 },
+        paint: {
+          'fill-color': zones.fill,
+          'fill-opacity': zones.focusFillOpacity,
+          'fill-emissive-strength': zones.emissive,
+        },
       });
       addLayer({
         id: 'cb-focus-line', type: 'line', source: 'cb-focus',
         layout: { visibility: 'none' },
-        paint: { 'line-color': zones.focusStroke, 'line-width': 3 },
+        paint: {
+          'line-color': zones.focusStroke,
+          'line-width': theme === 'dark' ? 4 : 3.2,
+        },
       });
     }
     if (!map.getLayer('cb-questions-thermo')) {

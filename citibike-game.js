@@ -731,14 +731,16 @@
 
     stations = (geojson.features || []).map((f, i) => {
       const [lng, lat] = f.geometry.coordinates;
-      let borough = 'Jersey';
-      const pt = turf.point([lng, lat]);
-      for (const [name, poly] of Object.entries(boroughPolys)) {
-        if (name === 'Jersey') continue;
-        if (turf.booleanPointInPolygon(pt, poly)) { borough = name; break; }
+      let borough = f.properties.borough || 'Jersey';
+      if (!f.properties.borough) {
+        const pt = turf.point([lng, lat]);
+        for (const [name, poly] of Object.entries(boroughPolys)) {
+          if (name === 'Jersey') continue;
+          if (turf.booleanPointInPolygon(pt, poly)) { borough = name; break; }
+        }
       }
       return {
-        id: `${lng.toFixed(6)}_${lat.toFixed(6)}_${i}`,
+        id: f.properties.station_id || `${lng.toFixed(6)}_${lat.toFixed(6)}_${i}`,
         name: f.properties.name || `Station ${i}`,
         lng, lat, borough,
         coastMi: distToCoast(lat, lng),
