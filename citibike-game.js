@@ -9,7 +9,6 @@
     { id: 'lga', code: 'LGA', name: 'LaGuardia Airport', lat: 40.7757145, lng: -73.8733640 },
     { id: 'jfk', code: 'JFK', name: 'John F. Kennedy International Airport', lat: 40.6429479, lng: -73.7793734 },
   ];
-  const COMMERCIAL_AIRPORTS = AIRPORTS.filter(a => a.id === 'lga' || a.id === 'jfk');
   const CAST_COST = {
     radius: { draw: 2, pick: 1, name: 'Radar' },
     thermometer: { draw: 2, pick: 1, name: 'Thermometer' },
@@ -18,12 +17,19 @@
   };
   const MATCH_SUBS = [
     ['borough', 'Borough'],
+    ['landmass', 'Land mass'],
     ['airport', 'Closest airport'],
   ];
   const MEASURE_SUBS = [
     ['coastline', 'Coastline'],
-    ['airport', 'Nearest commercial airport'],
+    ['airport', 'Nearest airport'],
   ];
+  const LAND_MASSES = ['mainland', 'islands', 'longisland'];
+  const LAND_MASS_LABEL = {
+    mainland: 'Mainland (Bronx / NJ / Marble Hill)',
+    islands: 'Manhattan islands',
+    longisland: 'Brooklyn / Queens',
+  };
 
   let colorIdx = 0;
   let questions = [];
@@ -34,7 +40,9 @@
   let coastSimple = null;
   let coastMask = null;
   let gameArea = null;
-  let landMask = null;
+  let playablePoly = null;
+  let greyStatic = null;
+  let playableBorder = null;
   let onChange = null;
 
   function nextColor() {
@@ -208,10 +216,6 @@
       if (d < bestD) { bestD = d; best = a; }
     }
     return { airport: best, miles: bestD };
-  }
-
-  function nearestCommercial(pt) {
-    return nearestAirport(pt, COMMERCIAL_AIRPORTS);
   }
 
   function usesCenter(q) {
@@ -389,10 +393,117 @@
     return otherLandCache[name];
   }
 
+  const landMassPolyCache = {};
+  const landMassIndexCache = {};
+  const landMassEdgeCache = {};
+  const otherLandMassCache = {};
+
+  /**
+   * Marble Hill is Manhattan borough but on the Bronx mainland. Roosevelt Island
+   * and Governors Island stay with Manhattan island; Brooklyn and Queens are one mass.
+   */
+  function splitManhattanParts() {
+    const man = boroughLand('Manhattan');
+    if (!man) return { marbleHill: null, islands: null };
+    if (man.geometry.type !== 'MultiPolygon') {
+      return { marbleHill: null, islands: man };
+    }
+    let marbleHill = null;
+    const islandParts = [];
+    for (const p of man.geometry.coordinates) {
+      const c = turf.centroid(turf.polygon(p));
+      const [lng, lat] = c.geometry.coordinates;
+      if (lat >= 40.862 && lng <= -73.908) marbleHill = p;
+      else islandParts.push(p);
+    }
+    return {
+      marbleHill: marbleHill ? turf.polygon(marbleHill) : null,
+      islands: islandParts.length ? turf.multiPolygon(islandParts) : null,
+    };
+  }
+
+  function buildLandMassPolys() {
+    if (landMassPolyCache._built) return;
+    const { marbleHill, islands } = splitManhattanParts();
+    const mainlandParts = [boroughLand('Bronx'), boroughPoly('Jersey'), marbleHill].filter(Boolean);
+    const longislandParts = [boroughLand('Brooklyn'), boroughLand('Queens')].filter(Boolean);
+    landMassPolyCache.mainland = mainlandParts.length ? Geo().unionMany(mainlandParts) : null;
+    landMassPolyCache.islands = islands;
+    landMassPolyCache.longisland = longislandParts.length ? Geo().unionMany(longislandParts) : null;
+    landMassPolyCache._built = true;
+  }
+
+  function landMassPoly(id) {
+    buildLandMassPolys();
+    return landMassPolyCache[id] || null;
+  }
+
+  function landMassIndex(id) {
+    if (landMassIndexCache[id] !== undefined) return landMassIndexCache[id];
+    const poly = landMassPoly(id);
+    if (!poly) return null;
+    const rings = simplifiedRings(poly, 0.00005);
+    const index = rings.length ? Geo().buildSegmentIndex(rings, 0.02) : null;
+    landMassIndexCache[id] = index;
+    return index;
+  }
+
+  function landMassAt(lng, lat) {
+    if (![lng, lat].every(Number.isFinite)) return null;
+    for (const id of LAND_MASSES) {
+      const poly = landMassPoly(id);
+      if (poly && turf.booleanPointInPolygon([lng, lat], poly)) return id;
+    }
+    let best = LAND_MASSES[0];
+    let bestD = Infinity;
+    for (const id of LAND_MASSES) {
+      const index = landMassIndex(id);
+      if (!index) continue;
+      const d = Geo().minDistanceIndexedMi(index, lng, lat);
+      if (d < bestD) { bestD = d; best = id; }
+    }
+    return best;
+  }
+
+  function seekerLandMass(q) {
+    if (q.lat != null && q.lng != null) return landMassAt(q.lng, q.lat);
+    return null;
+  }
+
+  function possibleLandMasses(st) {
+    const h = hideRadiusMi + 1e-9;
+    const out = [];
+    for (const id of LAND_MASSES) {
+      if (st.landMass === id) {
+        out.push(id);
+        continue;
+      }
+      const edges = landMassEdgeDistances(id);
+      if (edges && edges[st.idx] <= h) out.push(id);
+    }
+    return out;
+  }
+
+  function landExceptMass(name) {
+    if (otherLandMassCache[name] !== undefined) return otherLandMassCache[name];
+    const parts = LAND_MASSES.filter(m => m !== name).map(m => landMassPoly(m)).filter(Boolean);
+    if (parts.length < LAND_MASSES.length - 1) return null;
+    otherLandMassCache[name] = Geo().unionMany(parts);
+    return otherLandMassCache[name];
+  }
+
+  function clearLandMassCaches() {
+    for (const k of Object.keys(landMassPolyCache)) delete landMassPolyCache[k];
+    for (const k of Object.keys(landMassIndexCache)) delete landMassIndexCache[k];
+    for (const k of Object.keys(landMassEdgeCache)) delete landMassEdgeCache[k];
+    for (const k of Object.keys(otherLandMassCache)) delete otherLandMassCache[k];
+  }
+
   function clearBoroughCaches() {
     [boroughLandCache, boroughMaskCache, boroughIndexCache, boroughEdgeCache, otherLandCache]
       .forEach(cache => { for (const k of Object.keys(cache)) delete cache[k]; });
     jerseyPoly = null;
+    clearLandMassCaches();
   }
 
   /**
@@ -409,6 +520,19 @@
       out[i] = Geo().minDistanceIndexedMi(index, stations[i].lng, stations[i].lat);
     }
     boroughEdgeCache[name] = out;
+    return out;
+  }
+
+  function landMassEdgeDistances(id) {
+    const cached = landMassEdgeCache[id];
+    if (cached && cached.length === stations.length) return cached;
+    const index = landMassIndex(id);
+    if (!index) return null;
+    const out = new Float64Array(stations.length);
+    for (let i = 0; i < stations.length; i++) {
+      out[i] = Geo().minDistanceIndexedMi(index, stations[i].lng, stations[i].lat);
+    }
+    landMassEdgeCache[id] = out;
     return out;
   }
 
@@ -505,6 +629,14 @@
       return possible.some(id => id !== seeker.id);
     }
 
+    if (q.type === 'matching' && q.subtype === 'landmass') {
+      const mass = seekerLandMass(q);
+      if (!mass) return true;
+      const possible = possibleLandMasses(st);
+      if (q.answer === 'same') return possible.includes(mass);
+      return possible.some(m => m !== mass);
+    }
+
     if (q.type === 'measuring' && q.subtype === 'coastline') {
       if (q.lat == null || !coastFeature) return true;
       const measure = distToCoast(q.lat, q.lng);
@@ -516,8 +648,8 @@
 
     if (q.type === 'measuring' && q.subtype === 'airport') {
       if (q.lat == null) return true;
-      const measure = nearestCommercial({ lat: q.lat, lng: q.lng }).miles;
-      const d = nearestCommercial(st).miles;
+      const measure = nearestAirport({ lat: q.lat, lng: q.lng }).miles;
+      const d = nearestAirport(st).miles;
       if (q.answer === 'closer') return d - h <= measure + eps;
       return d + h >= measure - eps;
     }
@@ -684,6 +816,15 @@
           const other = landExcept(boro);
           if (other) area = Geo().modifyMapData(area, other, true);
         }
+      } else if (q.type === 'matching' && q.subtype === 'landmass') {
+        const mass = seekerLandMass(q);
+        if (q.answer === 'same') {
+          const poly = mass && landMassPoly(mass);
+          if (poly) area = Geo().modifyMapData(area, poly, true);
+        } else if (mass) {
+          const other = landExceptMass(mass);
+          if (other) area = Geo().modifyMapData(area, other, true);
+        }
       } else if (q.type === 'matching' && q.subtype === 'airport' && q.lat != null) {
         const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, AIRPORTS);
         if (cell) area = Geo().modifyMapData(area, cell, q.answer === 'same');
@@ -691,15 +832,15 @@
         const band = coastBand(distToCoast(q.lat, q.lng));
         if (band) area = Geo().modifyMapData(area, band, q.answer === 'closer');
       } else if (q.type === 'measuring' && q.subtype === 'airport' && q.lat != null) {
-        const m = nearestCommercial({ lat: q.lat, lng: q.lng }).miles;
-        const circles = COMMERCIAL_AIRPORTS.map(a =>
+        const m = nearestAirport({ lat: q.lat, lng: q.lng }).miles;
+        const circles = AIRPORTS.map(a =>
           turf.circle([a.lng, a.lat], m, { steps: 64, units: 'miles' }));
         const band = Geo().unionMany(circles);
         if (band) area = Geo().modifyMapData(area, band, q.answer === 'closer');
       }
     }
 
-    if (gameArea) area = Geo().intersect(area, gameArea) || area;
+    if (playablePoly) area = Geo().intersect(area, playablePoly) || area;
 
     areaCache = { key, area };
     return area;
@@ -707,34 +848,52 @@
 
   let maskCache = { key: null, mask: null, border: null };
 
-  /** Gray only on land outside the possible zone — waterways stay clear. */
-  function landEliminatedMask(possible) {
-    if (!landMask || !possible) return EMPTY_FC;
-    const land = Geo().safePoly(landMask);
-    const play = Geo().safePoly(possible);
-    if (!land || !play) return EMPTY_FC;
-    try {
-      const gray = turf.difference(turf.featureCollection([land, play]));
-      if (!gray) return EMPTY_FC;
-      return { type: 'FeatureCollection', features: [gray] };
-    } catch (_) {
-      return EMPTY_FC;
+  function boroughQuestions() {
+    return questions.filter(q =>
+      q.answer != null && q.type === 'matching' && (q.subtype === 'borough' || q.subtype === 'landmass'));
+  }
+
+  /** Remaining playable land after borough / land-mass answers. Null = full start polygon. */
+  function remainingPlayable() {
+    const qs = boroughQuestions();
+    if (!qs.length) return null;
+    let area = playablePoly;
+    if (!area) return null;
+    for (const q of qs) {
+      if (q.subtype === 'borough') {
+        const boro = seekerBorough(q);
+        const poly = boro && boroughPoly(boro);
+        if (!poly) continue;
+        area = Geo().modifyMapData(area, poly, q.answer === 'same');
+      } else if (q.subtype === 'landmass') {
+        const mass = seekerLandMass(q);
+        const poly = mass && landMassPoly(mass);
+        if (!poly) continue;
+        area = Geo().modifyMapData(area, poly, q.answer === 'same');
+      }
     }
+    return Geo().safePoly(area);
   }
 
   function ensureMaskCache() {
-    const key = answeredKey();
+    const key = boroughQuestions().map(q => `${q.id}:${q.subtype}:${q.answer}`).join('|') || 'start';
     if (maskCache.key === key) return maskCache;
-    const possible = possibleAreaFromQuestions();
-    if (!possible) {
-      maskCache = { key, mask: EMPTY_FC, border: EMPTY_FC };
+    const remaining = remainingPlayable();
+    if (!remaining) {
+      maskCache = {
+        key,
+        mask: greyStatic || EMPTY_FC,
+        border: playableBorder || EMPTY_FC,
+      };
       return maskCache;
     }
-    const f = Geo().safePoly(possible);
+    let grey = null;
+    try { grey = turf.mask(remaining, Geo().MASK_FRAME); } catch (_) { grey = null; }
+    const line = Geo().outerRingLine(remaining);
     maskCache = {
       key,
-      mask: landEliminatedMask(possible),
-      border: f ? { type: 'FeatureCollection', features: [f] } : EMPTY_FC,
+      mask: grey ? { type: 'FeatureCollection', features: [grey] } : (greyStatic || EMPTY_FC),
+      border: line ? { type: 'FeatureCollection', features: [line] } : (playableBorder || EMPTY_FC),
     };
     return maskCache;
   }
@@ -790,8 +949,8 @@
           features.push(line);
         }
       } else if (q.type === 'measuring' && q.subtype === 'airport' && q.lat != null) {
-        const m = nearestCommercial({ lat: q.lat, lng: q.lng }).miles;
-        for (const a of COMMERCIAL_AIRPORTS) {
+        const m = nearestAirport({ lat: q.lat, lng: q.lng }).miles;
+        for (const a of AIRPORTS) {
           features.push(turf.feature(turf.point([a.lng, a.lat]).geometry, {
             kind: 'airport', id: q.id, code: a.code, name: a.name, color: q.color,
           }));
@@ -821,7 +980,9 @@
     if (q.type === 'radius') return `Radar ${n}`;
     if (q.type === 'thermometer') return `Thermometer ${n}`;
     if (q.type === 'matching') {
-      return q.subtype === 'airport' ? `Matching ${n} · Airport` : `Matching ${n} · Borough`;
+      if (q.subtype === 'airport') return `Matching ${n} · Airport`;
+      if (q.subtype === 'landmass') return `Matching ${n} · Land mass`;
+      return `Matching ${n} · Borough`;
     }
     if (q.type === 'measuring') {
       return q.subtype === 'airport' ? `Measuring ${n} · Airport` : `Measuring ${n} · Coastline`;
@@ -952,6 +1113,14 @@
           ${near ? `<p class="game-hint">Your nearest airport: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
           ${resultRow(q, { ans: 'different', label: 'Different' }, { ans: 'same', label: 'Same as me' })}`;
       }
+      if (q.subtype === 'landmass') {
+        const mass = seekerLandMass(q);
+        return `
+          <select class="q-subtype" data-id="${q.id}">${sub}</select>
+          ${locCard(q, 'Your location', 'center', q.lat, q.lng)}
+          ${mass ? `<p class="game-hint">Your land mass: <strong>${LAND_MASS_LABEL[mass]}</strong></p>` : '<p class="game-hint">Place your pin to detect land mass.</p>'}
+          ${resultRow(q, { ans: 'different', label: 'Different' }, { ans: 'same', label: 'Same as me' })}`;
+      }
       const boro = seekerBorough(q);
       return `
         <select class="q-subtype" data-id="${q.id}">${sub}</select>
@@ -963,11 +1132,11 @@
       const sub = MEASURE_SUBS.map(([id, label]) =>
         `<option value="${id}"${q.subtype === id ? ' selected' : ''}>${label}</option>`).join('');
       if (q.subtype === 'airport') {
-        const near = q.lat != null ? nearestCommercial({ lat: q.lat, lng: q.lng }) : null;
+        const near = q.lat != null ? nearestAirport({ lat: q.lat, lng: q.lng }) : null;
         return `
           <select class="q-subtype" data-id="${q.id}">${sub}</select>
           ${locCard(q, 'Your location', 'center', q.lat, q.lng)}
-          ${near ? `<p class="game-hint">Nearest commercial airport: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
+          ${near ? `<p class="game-hint">Nearest airport: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
           ${resultRow(q, { ans: 'further', label: 'Hider Further' }, { ans: 'closer', label: 'Hider Closer' })}`;
       }
       const d = q.lat != null ? distToCoast(q.lat, q.lng) : null;
@@ -1164,11 +1333,13 @@
   }
 
   async function initStationData(geojson) {
-    const [boro, coast, area, land] = await Promise.all([
+    const [boro, coast, area, playable, grey, border] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
       fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
-      fetch('data/game_area.geojson').then(r => r.json()).catch(() => null),
-      fetch('data/land_mask.geojson').then(r => r.json()).catch(() => null),
+      fetch('data/game_area.geojson?v=5').then(r => r.json()).catch(() => null),
+      fetch('data/playable.geojson?v=5').then(r => r.json()).catch(() => null),
+      fetch('data/grey.geojson?v=5').then(r => r.json()).catch(() => null),
+      fetch('data/playable_border.geojson?v=5').then(r => r.json()).catch(() => null),
       Geo().snapAirportsViaTilequery(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
     airportBisectors.clear();
@@ -1181,7 +1352,10 @@
     }
     clearBoroughCaches();
     gameArea = area?.features?.[0] || null;
-    landMask = land?.features?.[0] || null;
+    playablePoly = playable?.features?.[0] || gameArea;
+    greyStatic = grey || null;
+    playableBorder = border || null;
+    maskCache = { key: null, mask: null, border: null };
     areaCache = { key: null, area: null };
     maskCache = { key: null, mask: null, border: null };
     activeCache = { key: null, list: null };
@@ -1220,12 +1394,14 @@
           if (turf.booleanPointInPolygon([lng, lat], b.poly)) { borough = b.name; break; }
         }
       }
-      return {
+      const st = {
         idx: i,
         id: f.properties.station_id || `${lng.toFixed(6)}_${lat.toFixed(6)}_${i}`,
         name: f.properties.name || `Station ${i}`,
         lng, lat, borough,
       };
+      st.landMass = landMassAt(lng, lat);
+      return st;
     });
   }
 

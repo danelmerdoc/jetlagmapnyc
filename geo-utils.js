@@ -3,6 +3,8 @@ window.JetLagGeo = (function () {
   const WORLD = turf.polygon([[
     [-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85],
   ]]);
+  /** Metro-scale frame for the gray overlay. World-sized rings do not fill in Mapbox GL. */
+  const MASK_FRAME = turf.bboxPolygon([-75.8, 39.6, -71.4, 42.2]);
 
   function safeFeature(g) {
     if (!g) return null;
@@ -32,34 +34,52 @@ window.JetLagGeo = (function () {
     }
   }
 
-  const WORLD_RING = WORLD.geometry.coordinates[0];
+  /** Drop interior rings — one outer coast loop, no pier/island hole outlines. */
+  function outerRing(region) {
+    const f = safePoly(region);
+    if (!f) return null;
+    const g = f.geometry;
+    if (g.type === 'Polygon') return turf.polygon([g.coordinates[0]]);
+    if (g.type === 'MultiPolygon') {
+      let best = null;
+      let bestA = -1;
+      for (const p of g.coordinates) {
+        const ring = p[0];
+        let a = 0;
+        try { a = turf.area(turf.polygon([ring])); } catch (_) { a = 0; }
+        if (a > bestA) { bestA = a; best = ring; }
+      }
+      return best ? turf.polygon([best]) : null;
+    }
+    return null;
+  }
 
   /**
-   * Everything outside `region`, i.e. the gray overlay.
-   *
-   * When the region's parts are solid and disjoint, that is just the world ring
-   * with each part's outline punched out as a hole — exact, and far cheaper than a
-   * general boolean against a detailed shoreline. Parts that already carry
-   * interior rings would nest holes inside holes, so those fall back to a
-   * difference.
+   * Gray overlay: metro frame with the playable outer ring punched as a hole.
+   * Built as a two-ring polygon so Mapbox can fill it (unlike world-scale difference).
    */
-  function holedMask(region) {
-    const f = safePoly(region);
-    if (!f) return WORLD;
-    const parts = f.geometry.type === 'MultiPolygon'
-      ? f.geometry.coordinates
-      : [f.geometry.coordinates];
-    if (parts.length && parts.every(p => p.length === 1)) {
-      try {
-        return turf.polygon([WORLD_RING].concat(parts.map(p => p[0])));
-      } catch (_) { /* fall through to the boolean */ }
-    }
+  function maskOutside(hole, frame) {
+    const cutout = outerRing(hole) || safePoly(hole);
+    const base = safePoly(frame) || MASK_FRAME;
+    if (!cutout) return base;
     try {
-      const hole = turf.difference(turf.featureCollection([WORLD, f]));
-      return hole || WORLD;
+      return turf.mask(cutout, base);
     } catch (_) {
-      return WORLD;
+      return base;
     }
+  }
+
+  function holedMask(region) {
+    return maskOutside(region, MASK_FRAME);
+  }
+
+  /** LineString border from the outer shell — never traces interior rings. */
+  function outerRingLine(region) {
+    const shell = outerRing(region);
+    if (!shell) return null;
+    const ring = shell.geometry.coordinates[0];
+    if (!ring?.length) return null;
+    return turf.lineString(ring);
   }
 
   /** positive=true → keep overlap; false → keep outside region */
@@ -606,7 +626,8 @@ window.JetLagGeo = (function () {
   }
 
   return {
-    WORLD, intersect, holedMask, modifyMapData, geodesicCircle,
+    WORLD, MASK_FRAME, intersect, holedMask, maskOutside, outerRing, outerRingLine,
+    modifyMapData, geodesicCircle,
     thermometerRegion, thermometerBisectorLine, thermometerSignedMiles,
     thermometerMidpoint, thermometerLinkLine,
     bisectorBetween, bisectorSignedMiles, bisectorHalfPlane, bisectorLine,

@@ -29,9 +29,9 @@
 
   function elimStyle() {
     if (theme === 'dark') {
-      return { fill: '#c09a50', fillOpacity: 0.38, border: '#d4af37', borderWidth: 2.6 };
+      return { fill: '#64748b', fillOpacity: 0.52, border: '#60a5fa', borderWidth: 2.8 };
     }
-    return { fill: '#3b82f6', fillOpacity: 0.32, border: '#2563eb', borderWidth: 2.4 };
+    return { fill: '#64748b', fillOpacity: 0.55, border: '#2563eb', borderWidth: 2.5 };
   }
 
   function zoneStyle() {
@@ -95,8 +95,22 @@
       map.setConfigProperty('basemap', 'show3dLandmarks', false);
       map.setConfigProperty('basemap', 'show3dTrees', false);
       map.setConfigProperty('basemap', 'show3dFacades', false);
+      map.setConfigProperty('basemap', 'showAdminBoundaries', false);
     } catch (_) { /* classic styles */ }
+    hideAdminLineLayers();
     if (map.getPitch() !== 0) map.setPitch(0);
+  }
+
+  function hideAdminLineLayers() {
+    if (!map?.getStyle?.()) return;
+    const layers = map.getStyle().layers || [];
+    for (const layer of layers) {
+      if (layer.id.startsWith('cb-')) continue;
+      const id = layer.id.toLowerCase();
+      if (layer.type === 'line' && (id.includes('admin') || id.includes('boundary') || id.includes('border'))) {
+        try { map.setLayoutProperty(layer.id, 'visibility', 'none'); } catch (_) { /* imported */ }
+      }
+    }
   }
 
   function setStatus(text) {
@@ -444,18 +458,20 @@
     if (!map.getLayer('cb-elim-fill')) {
       addLayer({
         id: 'cb-elim-fill', type: 'fill', source: 'cb-elim',
-        layout: { visibility: 'none' },
+        layout: { visibility: 'visible' },
         paint: { 'fill-color': elim.fill, 'fill-opacity': elim.fillOpacity },
       });
     }
     if (!map.getLayer('cb-possible-border')) {
       addLayer({
         id: 'cb-possible-border', type: 'line', source: 'cb-possible',
-        layout: { visibility: 'none' },
+        layout: { visibility: 'visible' },
         paint: {
           'line-color': elim.border,
           'line-width': elim.borderWidth,
-          'line-opacity': 0.95,
+          'line-opacity': 1,
+          'line-join': 'round',
+          'line-cap': 'round',
         },
       });
     }
@@ -834,6 +850,7 @@
           show3dLandmarks: false,
           show3dTrees: false,
           show3dFacades: false,
+          showAdminBoundaries: false,
         },
       },
     });

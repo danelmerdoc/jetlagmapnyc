@@ -1,28 +1,66 @@
 #!/usr/bin/env node
 /**
- * Build Citi Bike playable + land-mask polygons.
+ * Build Citi Bike playable polygons and the grey overlay.
  *
- * Playable (game_area.geojson): Manhattan, Bronx, Brooklyn, Queens, Hoboken,
- * and Jersey City — no Staten Island, no other NJ.
+ * playable.geojson  — ONE polygon: Manhattan, Bronx, Brooklyn, Queens,
+ *                     Hoboken, Jersey City, plus a Hudson strip so NY/NJ
+ *                     are a single region. Outer ring only.
+ * grey.geojson      — metro rectangle minus that polygon (precomputed).
+ * game_area.geojson — same union, used to filter stations.
  *
- * Land mask (land_mask.geojson): all five NYC boroughs plus Hudson County NJ.
- * Gray overlay = land_mask minus the current possible area, so waterways stay
- * clear and Staten Island / the rest of NJ show as eliminated land.
- *
- * Usage: TURF_PATH=/path/to/@turf/turf node scripts/build-game-area.js
+ * Usage: node scripts/build-game-area.js
  */
 const fs = require('fs');
 const path = require('path');
-
 const turf = require(process.env.TURF_PATH || '@turf/turf');
 
 const DATA = path.join(__dirname, '../data');
-const BOROUGHS = path.join(DATA, 'nyc_boroughs.geojson');
-const OUT_AREA = path.join(DATA, 'game_area.geojson');
-const OUT_LAND = path.join(DATA, 'land_mask.geojson');
-
-const SIMPLIFY = 0.0002;
 const UA = 'JetLagNYC-map/1.0 (citibike hide and seek)';
+
+/** Tight metro frame — large enough to cover panning, small enough for Mapbox fill. */
+const FRAME = [-75.8, 39.6, -71.4, 42.2];
+
+function unionAll(parts, label) {
+  let area = null;
+  for (const part of parts) {
+    const name = part.properties?.BoroName || part.properties?.name || 'part';
+    if (!area) { area = part; console.log(`  ${label}:`, name); continue; }
+    const next = turf.union(turf.featureCollection([area, part]));
+    if (!next) throw new Error(`union failed at ${name}`);
+    area = next;
+    console.log('  +', name);
+  }
+  return area;
+}
+
+function outerPolygon(feature) {
+  const g = feature.geometry;
+  let ring;
+  if (g.type === 'Polygon') {
+    ring = g.coordinates[0];
+  } else {
+    let best = g.coordinates[0][0];
+    let bestA = -1;
+    for (const poly of g.coordinates) {
+      let a = 0;
+      try { a = turf.area(turf.polygon([poly[0]])); } catch (_) { a = 0; }
+      if (a > bestA) { bestA = a; best = poly[0]; }
+    }
+    ring = best;
+  }
+  return turf.polygon([ring]);
+}
+
+function hudsonStrip(manhattan, nj) {
+  const mb = turf.bbox(manhattan);
+  const jb = turf.bbox(nj);
+  return turf.bboxPolygon([
+    jb[2] - 0.035,
+    Math.max(jb[1], 40.69),
+    mb[0] + 0.07,
+    jb[3],
+  ], { name: 'Hudson strip' });
+}
 
 async function nominatim(query, cacheFile) {
   const cachePath = path.join(DATA, cacheFile);
@@ -40,25 +78,12 @@ async function nominatim(query, cacheFile) {
   return f;
 }
 
-function unionAll(parts, label) {
-  let area = null;
-  for (const part of parts) {
-    const name = part.properties.BoroName || part.properties.name || 'part';
-    if (!area) { area = part; console.log(`  ${label}:`, name); continue; }
-    const next = turf.union(turf.featureCollection([area, part]));
-    if (!next) throw new Error(`union failed at ${name}`);
-    area = next;
-    console.log('  +', name);
-  }
-  return area;
-}
-
 (async () => {
-  const boroughs = JSON.parse(fs.readFileSync(BOROUGHS, 'utf8'));
+  const boroughs = JSON.parse(fs.readFileSync(path.join(DATA, 'nyc_boroughs.geojson'), 'utf8'));
   const byName = {};
   for (const f of boroughs.features) byName[f.properties.BoroName] = f;
 
-  console.log('Fetching NJ outlines…');
+  console.log('NJ outlines…');
   const hoboken = await nominatim(
     'city=Hoboken&county=Hudson+County&state=New+Jersey&country=USA',
     'nj_hoboken.geojson',
@@ -67,41 +92,48 @@ function unionAll(parts, label) {
     'city=Jersey+City&county=Hudson+County&state=New+Jersey&country=USA',
     'nj_jersey_city.geojson',
   );
-  const hudson = await nominatim(
-    'county=Hudson+County&state=New+Jersey&country=USA',
-    'nj_hudson.geojson',
-  );
-  const essex = await nominatim(
-    'county=Essex+County&state=New+Jersey&country=USA',
-    'nj_essex.geojson',
-  );
-  const bergen = await nominatim(
-    'county=Bergen+County&state=New+Jersey&country=USA',
-    'nj_bergen.geojson',
-  );
 
-  const playableParts = [
+  const nj = turf.union(turf.featureCollection([hoboken, jerseyCity]));
+  nj.properties = { name: 'Hoboken + Jersey City' };
+
+  const parts = [
     byName.Manhattan, byName.Bronx, byName.Brooklyn, byName.Queens,
-    hoboken, jerseyCity,
-  ].filter(Boolean);
+    hoboken, jerseyCity, hudsonStrip(byName.Manhattan, nj),
+  ];
 
-  console.log('\nUnion playable area…');
-  const playable = turf.simplify(
-    unionAll(playableParts, 'playable'),
-    { tolerance: SIMPLIFY, highQuality: true },
-  );
-  playable.properties = { name: 'Citi Bike playable area' };
+  console.log('\nUnion playable…');
+  const merged = unionAll(parts, 'playable');
 
-  const landParts = boroughs.features.concat(hudson, essex, bergen);
-  console.log('\nUnion land mask…');
-  const land = turf.simplify(
-    unionAll(landParts, 'land'),
-    { tolerance: SIMPLIFY, highQuality: true },
-  );
-  land.properties = { name: 'Citi Bike land mask' };
+  console.log('\nOne display polygon (concave hull)…');
+  const sample = [];
+  const rings = merged.geometry.type === 'MultiPolygon'
+    ? merged.geometry.coordinates.map(p => p[0])
+    : [merged.geometry.coordinates[0]];
+  for (const ring of rings) {
+    const step = Math.max(1, Math.floor(ring.length / 80));
+    for (let i = 0; i < ring.length; i += step) sample.push(turf.point(ring[i]));
+  }
+  let playable = turf.concave(turf.featureCollection(sample), {
+    maxEdge: 12,
+    units: 'kilometers',
+  });
+  playable = outerPolygon(playable);
+  playable.properties = { name: 'playable' };
 
-  fs.writeFileSync(OUT_AREA, JSON.stringify(turf.featureCollection([playable])));
-  fs.writeFileSync(OUT_LAND, JSON.stringify(turf.featureCollection([land])));
+  const frame = turf.bboxPolygon(FRAME);
+  const grey = turf.mask(playable, frame);
+  grey.properties = { name: 'grey' };
+
+  const border = turf.lineString(playable.geometry.coordinates[0]);
+  border.properties = { name: 'playable-border' };
+
+  const area = turf.simplify(outerPolygon(merged), { tolerance: 0.0002, highQuality: true });
+  area.properties = { name: 'Citi Bike playable area' };
+
+  fs.writeFileSync(path.join(DATA, 'playable.geojson'), JSON.stringify(turf.featureCollection([playable])));
+  fs.writeFileSync(path.join(DATA, 'grey.geojson'), JSON.stringify(turf.featureCollection([grey])));
+  fs.writeFileSync(path.join(DATA, 'playable_border.geojson'), JSON.stringify(turf.featureCollection([border])));
+  fs.writeFileSync(path.join(DATA, 'game_area.geojson'), JSON.stringify(turf.featureCollection([area])));
 
   const st = JSON.parse(fs.readFileSync(path.join(DATA, 'citibike_stations.geojson'), 'utf8'));
   let inside = 0;
@@ -109,9 +141,24 @@ function unionAll(parts, label) {
     if (turf.booleanPointInPolygon(f.geometry.coordinates, playable)) inside++;
   }
 
-  console.log(`\nwrote ${path.relative(process.cwd(), OUT_AREA)}`);
-  console.log('  playable', (turf.area(playable) / 2589988).toFixed(1), 'sq mi',
-    '| stations inside', inside, '/', st.features.length);
-  console.log('wrote', path.relative(process.cwd(), OUT_LAND));
-  console.log('  land mask', (turf.area(land) / 2589988).toFixed(1), 'sq mi');
-})().catch(e => { console.error(e.message); process.exit(1); });
+  const checks = [
+    ['Manhattan', -73.98, 40.75, false],
+    ['Hoboken', -74.032, 40.745, false],
+    ['Hudson', -74.02, 40.74, false],
+    ['Elmont', -73.703, 40.701, true],
+    ['Mount Vernon', -73.837, 40.912, true],
+    ['Staten Island', -74.15, 40.58, true],
+    ['Newark', -74.172, 40.736, true],
+  ];
+  console.log('\nplayable', (turf.area(playable) / 2589988).toFixed(1), 'sq mi',
+    '| stations', inside, '/', st.features.length,
+    '| rings', playable.geometry.coordinates.length,
+    '| pts', playable.geometry.coordinates[0].length);
+  console.log('grey rings', grey.geometry.coordinates.length);
+  for (const [name, lng, lat, wantGrey] of checks) {
+    const g = turf.booleanPointInPolygon([lng, lat], grey);
+    const p = turf.booleanPointInPolygon([lng, lat], playable);
+    const ok = g === wantGrey && p === !wantGrey;
+    console.log(ok ? '  ok ' : '  FAIL ', name, 'grey=' + g, 'playable=' + p);
+  }
+})().catch(e => { console.error(e); process.exit(1); });
