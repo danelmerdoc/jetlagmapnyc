@@ -11,11 +11,16 @@
   let clickBound = false;
   let layersReady = false;
   let mergeTimer = null;
+  let refreshTimer = null;
   let markers = [];
   let liveWatchId = null;
   let liveMarker = null;
   let liveLngLat = null;
+  let lastLiveUpdate = 0;
   let lastTap = { t: 0, lng: 0, lat: 0 };
+
+  const IS_MOBILE = window.matchMedia?.('(max-width: 768px)').matches || 'ontouchstart' in window;
+  const ZONE_DEBOUNCE_MS = IS_MOBILE ? 220 : 90;
 
   const STYLE = 'mapbox://styles/mapbox/standard';
   /** Mapbox simplifies GeoJSON by default (~0.375px), which shrinks thousands of hide circles. */
@@ -196,7 +201,56 @@
 
   function scheduleZoneUpdate() {
     clearTimeout(mergeTimer);
-    mergeTimer = setTimeout(updateZoneSources, 90);
+    mergeTimer = setTimeout(updateZoneSources, ZONE_DEBOUNCE_MS);
+  }
+
+  function refreshQuestionsLayer() {
+    if (!map || !layersReady) return;
+    if (map.getSource('cb-questions')) map.getSource('cb-questions').setData(Game().questionsGeoJSON());
+    syncMarkers();
+  }
+
+  function refreshEliminationLayers() {
+    if (!map || !layersReady) return;
+    if (map.getSource('cb-stations')) map.getSource('cb-stations').setData(stationFeaturesGeoJSON());
+    if (map.getSource('cb-focus')) map.getSource('cb-focus').setData(focusGeoJSON());
+    if (map.getSource('cb-focus-outside')) map.getSource('cb-focus-outside').setData(focusOutsideMask());
+    if (map.getSource('cb-elim')) {
+      map.getSource('cb-elim').setData(focusStation ? EMPTY : Game().eliminatedMask());
+    }
+    if (map.getSource('cb-possible')) {
+      map.getSource('cb-possible').setData(focusStation ? EMPTY : Game().possibleAreaGeoJSON());
+    }
+    syncZoneVisibility();
+    updateZoneSources();
+  }
+
+  function refreshMap(scope = 'full') {
+    if (!map || !layersReady) return;
+    if (scope === 'live') {
+      updateLiveBanner();
+      return;
+    }
+    if (scope === 'questions') {
+      refreshQuestionsLayer();
+      return;
+    }
+    refreshQuestionsLayer();
+    refreshEliminationLayers();
+    updateLiveBanner();
+    if (map.doubleClickZoom) {
+      if (focusStation) map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
+    }
+  }
+
+  function scheduleRefresh(scope = 'full') {
+    clearTimeout(refreshTimer);
+    if (scope === 'full') {
+      refreshMap('full');
+      return;
+    }
+    refreshTimer = setTimeout(() => refreshMap(scope), scope === 'questions' ? 16 : 0);
   }
 
   function syncZoneVisibility() {
@@ -278,28 +332,6 @@
     }
   }
 
-  function refreshMap() {
-    if (!map || !layersReady) return;
-    if (map.getSource('cb-stations')) map.getSource('cb-stations').setData(stationFeaturesGeoJSON());
-    if (map.getSource('cb-questions')) map.getSource('cb-questions').setData(Game().questionsGeoJSON());
-    if (map.getSource('cb-focus')) map.getSource('cb-focus').setData(focusGeoJSON());
-    if (map.getSource('cb-focus-outside')) map.getSource('cb-focus-outside').setData(focusOutsideMask());
-    if (map.getSource('cb-elim')) {
-      map.getSource('cb-elim').setData(focusStation ? EMPTY : Game().eliminatedMask());
-    }
-    if (map.getSource('cb-possible')) {
-      map.getSource('cb-possible').setData(focusStation ? EMPTY : Game().possibleAreaGeoJSON());
-    }
-    syncZoneVisibility();
-    updateZoneSources();
-    syncMarkers();
-    updateLiveBanner();
-    if (map.doubleClickZoom) {
-      if (focusStation) map.doubleClickZoom.disable();
-      else map.doubleClickZoom.enable();
-    }
-  }
-
   function setFocusStation(st) {
     focusStation = st;
     const info = document.getElementById('cb-focus-info');
@@ -308,7 +340,7 @@
         ? `${st.name} · double-tap outside the circle to unselect`
         : 'Tap a station to isolate its hide circle. Double-tap outside that circle to unselect.';
     }
-    refreshMap();
+    refreshMap('full');
   }
 
   function populateSearch() {
@@ -334,7 +366,7 @@
       const raw = await (await fetch('data/citibike_stations.geojson?v=2')).json();
       await Game().initStationData(raw);
       populateSearch();
-      refreshMap();
+      refreshMap('full');
     } catch (e) {
       setStatus('Could not load Citi Bike stations.');
       console.error(e);
@@ -769,7 +801,7 @@
     layersReady = true;
     applyBasemap();
     updateThemePaint();
-    refreshMap();
+    refreshMap('full');
   }
 
   function getLocation(cb, err) {
@@ -780,7 +812,7 @@
     navigator.geolocation.getCurrentPosition(
       pos => cb({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
       () => { setStatus('Location permission denied.'); if (err) err(); },
-      { enableHighAccuracy: true, timeout: 12000 },
+      { enableHighAccuracy: !IS_MOBILE, timeout: 12000, maximumAge: IS_MOBILE ? 15000 : 5000 },
     );
   }
 
@@ -820,7 +852,7 @@
     } else {
       liveMarker.setLngLat([pt.lng, pt.lat]);
     }
-    updateLiveBanner();
+    scheduleRefresh('live');
   }
 
   function startLiveEndgame() {
@@ -830,9 +862,14 @@
       map?.flyTo({ center: [pt.lng, pt.lat], zoom: Math.max(map.getZoom(), 14), duration: 600 });
     });
     liveWatchId = navigator.geolocation.watchPosition(
-      pos => setLiveMarker({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      pos => {
+        const now = Date.now();
+        if (now - lastLiveUpdate < (IS_MOBILE ? 2500 : 1200)) return;
+        lastLiveUpdate = now;
+        setLiveMarker({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      },
       () => setStatus('Lost live location.'),
-      { enableHighAccuracy: true, maximumAge: 2000 },
+      { enableHighAccuracy: false, maximumAge: IS_MOBILE ? 8000 : 4000, timeout: 15000 },
     );
   }
 
@@ -861,7 +898,7 @@
       if (!b || !b.dataset.mode) return;
       zoneMode = b.dataset.mode;
       document.querySelectorAll('#cb-zone-mode button').forEach(x => x.classList.toggle('active', x === b));
-      refreshMap();
+      refreshMap('full');
     });
 
     document.getElementById('cb-toggle-transit')?.addEventListener('change', e => {
@@ -897,7 +934,7 @@
       timerRunning = true;
       timerStartedAt = Date.now();
       clearInterval(timerTick);
-      timerTick = setInterval(paintTimer, 250);
+      timerTick = setInterval(paintTimer, 1000);
       paintTimer();
     });
     document.getElementById('cb-timer-pause')?.addEventListener('click', () => {
@@ -941,6 +978,12 @@
     if (window.innerWidth <= 768) {
       panel.classList.add('collapsed');
       syncToggle();
+      if (zoneMode === 'overlap') {
+        zoneMode = 'off';
+        document.querySelectorAll('#cb-zone-mode button').forEach(x => {
+          x.classList.toggle('active', x.dataset.mode === 'off');
+        });
+      }
     }
   }
 
@@ -952,7 +995,7 @@
     mapboxgl.accessToken = window.MAPBOX_TOKEN;
     setStatus('Loading map…');
 
-    Game().onChange = refreshMap;
+    Game().onChange = scheduleRefresh;
     Game().bindUI();
     Game().renderList();
     bindChrome();
@@ -966,6 +1009,10 @@
       bearing: 0,
       hash: true,
       fadeDuration: 0,
+      antialias: !IS_MOBILE,
+      renderWorldCopies: false,
+      maxTileCacheSize: IS_MOBILE ? 28 : 50,
+      refreshExpiredTiles: !IS_MOBILE,
       attributionControl: true,
       config: {
         basemap: {
@@ -980,9 +1027,16 @@
     });
     map.addControl(new mapboxgl.NavigationControl({ visualizePitch: false }), 'top-right');
     map.addControl(new mapboxgl.GeolocateControl({
-      positionOptions: { enableHighAccuracy: true },
-      trackUserLocation: true,
+      positionOptions: { enableHighAccuracy: false, maximumAge: 10000 },
+      trackUserLocation: false,
+      showUserLocation: true,
     }), 'top-right');
+
+    document.addEventListener('visibilitychange', () => {
+      if (!map) return;
+      if (document.hidden) map.stop();
+      else map.start();
+    });
 
     map.on('style.load', () => {
       applyBasemap();

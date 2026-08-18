@@ -204,4 +204,7 @@ async function nominatim(query, cacheFile) {
     const ok = g === wantGrey && p === !wantGrey;
     console.log(ok ? '  ok ' : '  FAIL ', name);
   }
+
+  console.log('\nRebuild coastline (Hudson, East River, NY Bay, Newark Bay)…');
+  await require('./build-coastline').build();
 })().catch(e => { console.error(e); process.exit(1); });

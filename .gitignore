@@ -1,2 +1,4 @@
 config.js
 node_modules/
+data/.osm_coast_cache/
+data/.osm_*.json

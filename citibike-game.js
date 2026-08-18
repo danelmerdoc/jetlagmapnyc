@@ -38,12 +38,13 @@
   let boroughPolys = {};
   let coastFeature = null;
   let coastSimple = null;
-  let coastMask = null;
   let gameArea = null;
   let playablePoly = null;
   let greyStatic = { type: 'FeatureCollection', features: [] };
   let playableOutline = { type: 'FeatureCollection', features: [] };
   let onChange = null;
+  const IS_MOBILE = typeof window !== 'undefined'
+    && (window.matchMedia?.('(max-width: 768px)').matches || 'ontouchstart' in window);
 
   function nextColor() {
     const c = COLORS[colorIdx % COLORS.length];
@@ -529,11 +530,16 @@
     return null;
   }
 
+  function ensureLandMass(st) {
+    if (st.landMass == null) st.landMass = landMassAt(st.lng, st.lat);
+    return st.landMass;
+  }
+
   function possibleLandMasses(st) {
     const h = hideRadiusMi + 1e-9;
     const out = [];
     for (const id of LAND_MASSES) {
-      if (st.landMass === id) {
+      if (ensureLandMass(st) === id) {
         out.push(id);
         continue;
       }
@@ -766,7 +772,9 @@
 
   const EMPTY_FC = { type: 'FeatureCollection', features: [] };
   /** Above this many visible zones the union is too slow for phones. */
-  const MERGE_LIMIT = 700;
+  const MERGE_LIMIT = IS_MOBILE ? 220 : 700;
+  /** Mobile overlap falls back to one buffered multipoint past this count. */
+  const MOBILE_OVERLAP_FAST = 100;
 
   function visibleStations(list, bbox) {
     if (!bbox || !list) return list || [];
@@ -781,15 +789,40 @@
   }
 
   function zoneSteps(count) {
+    if (IS_MOBILE) {
+      if (count > 200) return 8;
+      if (count > 80) return 10;
+      return 14;
+    }
     if (count > 900) return 10;
     if (count > 400) return 14;
     if (count > 150) return 20;
     return 28;
   }
 
+  function bufferedZones(list) {
+    if (!list.length) return EMPTY_FC;
+    try {
+      const mp = turf.multiPoint(list.map(s => [s.lng, s.lat]));
+      const steps = zoneSteps(list.length);
+      const merged = turf.buffer(mp, hideRadiusMi / Math.cos(Math.PI / (4 * steps)), {
+        units: 'miles', steps,
+      });
+      if (merged?.geometry?.coordinates?.length) {
+        merged.properties = { kind: 'merged-zones' };
+        return { type: 'FeatureCollection', features: [merged] };
+      }
+    } catch (_) { /* fall through */ }
+    return null;
+  }
+
   function overlapZonesGeoJSON(activeSet, bbox) {
     const list = visibleStations(activeSet, bbox);
     if (!list.length) return EMPTY_FC;
+    if (IS_MOBILE && list.length > MOBILE_OVERLAP_FAST) {
+      const fast = bufferedZones(list);
+      if (fast) return fast;
+    }
     const steps = zoneSteps(list.length);
     const features = new Array(list.length);
     for (let i = 0; i < list.length; i++) {
@@ -816,20 +849,7 @@
     if (mergedCache.key === key && mergedCache.data) return mergedCache.data;
 
     let data = null;
-    if (list.length <= MERGE_LIMIT) {
-      try {
-        const mp = turf.multiPoint(list.map(s => [s.lng, s.lat]));
-        const steps = zoneSteps(list.length);
-        // buffer() inscribes its arcs, so grow the radius to keep the true circle covered.
-        const merged = turf.buffer(mp, hideRadiusMi / Math.cos(Math.PI / (4 * steps)), {
-          units: 'miles', steps,
-        });
-        if (merged?.geometry?.coordinates?.length) {
-          merged.properties = { kind: 'merged-zones' };
-          data = { type: 'FeatureCollection', features: [merged] };
-        }
-      } catch (_) { data = null; }
-    }
+    if (list.length <= MERGE_LIMIT) data = bufferedZones(list);
     // Too many zones to union quickly — overlapping circles read the same at this zoom.
     if (!data) data = overlapZonesGeoJSON(list, null);
 
@@ -844,7 +864,7 @@
     if (coastBufferCache.key === key) return coastBufferCache.buf;
     let buf = null;
     try {
-      buf = turf.buffer(coastMask || coastFeature, measure, { units: 'miles', steps: 6 });
+      buf = turf.buffer(coastFeature, measure, { units: 'miles', steps: 6 });
     } catch (_) { buf = null; }
     coastBufferCache = { key, buf };
     return buf;
@@ -1010,12 +1030,36 @@
     return overlayForState().border;
   }
 
+  function invalidateGameCaches() {
+    activeCache = { key: null, list: null };
+    areaCache = { key: null, area: null };
+    overlayCache = { key: null, mask: null, border: null };
+    mergedCache = { key: null, data: null };
+    questionsGeoCache = { key: null, data: null };
+    coastBufferCache = { key: null, buf: null };
+    for (const k of Object.keys(boroughEdgeCache)) delete boroughEdgeCache[k];
+    for (const k of Object.keys(landMassEdgeCache)) delete landMassEdgeCache[k];
+    coastDistCache = null;
+  }
+
+  let questionsGeoCache = { key: null, data: null };
+
+  function questionsGeoKey() {
+    return questions.map(q => [
+      q.id, q.open, q.type, q.subtype, q.lat, q.lng, q.latA, q.lngA, q.latB, q.lngB,
+      q.radius, q.unit, q.color, q.colorA, q.colorB,
+    ].join(',')).join('|');
+  }
+
   function questionsGeoJSON() {
+    const key = questionsGeoKey();
+    if (questionsGeoCache.key === key && questionsGeoCache.data) return questionsGeoCache.data;
+    const circleSteps = IS_MOBILE ? 36 : 64;
     const features = [];
     for (const q of questions) {
       if (!q.open) continue;
       if (q.type === 'radius' && q.lat != null) {
-        const circle = turf.circle([q.lng, q.lat], radiusMiles(q), { steps: 64, units: 'miles' });
+        const circle = turf.circle([q.lng, q.lat], radiusMiles(q), { steps: circleSteps, units: 'miles' });
         circle.properties = { kind: 'radius-line', id: q.id, color: q.color };
         features.push(circle);
       } else if (q.type === 'thermometer' && q.latA != null && q.latB != null) {
@@ -1058,13 +1102,15 @@
           features.push(turf.feature(turf.point([a.lng, a.lat]).geometry, {
             kind: 'airport', id: q.id, code: a.code, name: a.name, color: q.color,
           }));
-          const circle = turf.circle([a.lng, a.lat], m, { steps: 64, units: 'miles' });
+          const circle = turf.circle([a.lng, a.lat], m, { steps: circleSteps, units: 'miles' });
           circle.properties = { kind: 'measure-airport-circle', id: q.id, color: q.color };
           features.push(circle);
         }
       }
     }
-    return { type: 'FeatureCollection', features };
+    const data = { type: 'FeatureCollection', features };
+    questionsGeoCache = { key, data };
+    return data;
   }
 
   const ICON = {
@@ -1266,7 +1312,10 @@
         const q = questions.find(x => x.id === btn.closest('.q-answer').dataset.id);
         if (!q) return;
         q.answer = btn.dataset.ans;
-        save(); notifyChange(); renderList();
+        save();
+        invalidateGameCaches();
+        notifyChange('full');
+        renderList();
       });
     });
     el.querySelectorAll('.q-live').forEach(btn => {
@@ -1307,6 +1356,41 @@
     });
   }
 
+  function patchQuestionCoordsInDOM(q) {
+    const root = document.querySelector(`.cb-item[data-id="${q.id}"]`);
+    if (!root) return;
+    root.querySelectorAll('.loc-card').forEach(card => {
+      const field = card.dataset.field;
+      let lat = null;
+      let lng = null;
+      if (field === 'center') { lat = q.lat; lng = q.lng; }
+      else if (field === 'A') { lat = q.latA; lng = q.lngA; }
+      else if (field === 'B') { lat = q.latB; lng = q.lngB; }
+      if (lat == null || lng == null) return;
+      const coords = card.querySelector('.loc-coords');
+      if (coords) coords.innerHTML = fmtPretty(lat, lng).replace('\n', '<br>');
+      const ta = card.querySelector('textarea');
+      if (ta) ta.value = fmtCoord(lat, lng);
+    });
+    if (q.type === 'measuring' && q.subtype === 'coastline' && q.lat != null) {
+      const d = distToCoast(q.lat, q.lng);
+      const hint = root.querySelector('.game-hint');
+      if (hint && isFinite(d)) hint.textContent = `${d.toFixed(2)} mi from coast`;
+    }
+    if (q.type === 'measuring' && q.subtype === 'airport' && q.lat != null) {
+      const near = nearestAirport({ lat: q.lat, lng: q.lng });
+      const hint = root.querySelector('.game-hint');
+      if (hint && near.airport) {
+        hint.innerHTML = `Nearest airport: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)`;
+      }
+    }
+  }
+
+  function changeScopeForQuestion(q) {
+    if (!q || q.answer == null) return 'questions';
+    return 'full';
+  }
+
   function updateQuestionFromInputs(id) {
     const q = questions.find(x => x.id === id);
     if (!q) return;
@@ -1330,7 +1414,9 @@
       if (a) { q.latA = a.lat; q.lngA = a.lng; }
       if (b) { q.latB = b.lat; q.lngB = b.lng; }
     }
-    save(); notifyChange(); renderList();
+    save();
+    patchQuestionCoordsInDOM(q);
+    notifyChange(changeScopeForQuestion(q));
   }
 
   function setQuestionPoint(id, field, lat, lng) {
@@ -1342,7 +1428,9 @@
     }
     else if (field === 'A') { q.latA = lat; q.lngA = lng; }
     else if (field === 'B') { q.latB = lat; q.lngB = lng; }
-    save(); notifyChange(); renderList();
+    save();
+    patchQuestionCoordsInDOM(q);
+    notifyChange(changeScopeForQuestion(q));
   }
 
   function moveQuestion(id, dir) {
@@ -1424,22 +1512,20 @@
     notifyChange();
   }
 
-  function notifyChange() {
-    if (onChange) onChange();
+  function notifyChange(scope = 'full') {
+    if (onChange) onChange(scope);
   }
 
   function airportsMoved() {
     airportBisectors.clear();
-    activeCache = { key: null, list: null };
-    areaCache = { key: null, area: null };
-    overlayCache = { key: null, mask: null, border: null };
-    notifyChange();
+    invalidateGameCaches();
+    notifyChange('full');
   }
 
   async function initStationData(geojson) {
     const [boro, coast, area, playable, grey, border] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
-      fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
+      fetch('data/coastline.geojson?v=3').then(r => r.json()).catch(() => null),
       fetch('data/game_area.geojson?v=8').then(r => r.json()).catch(() => null),
       fetch('data/playable.geojson?v=8').then(r => r.json()).catch(() => null),
       fetch('data/grey.geojson?v=8').then(r => r.json()).catch(() => null),
@@ -1472,13 +1558,10 @@
       coastIndex = null;
       coastDistCache = null;
       if (coastFeature) {
+        // Pre-simplified at build time; light pass for segment-index speed only.
         try {
           coastSimple = turf.simplify(coastFeature, { tolerance: 0.0003, highQuality: false });
         } catch (_) { coastSimple = coastFeature; }
-        // The gray mask only needs a rough band, and buffering full detail is slow.
-        try {
-          coastMask = turf.simplify(coastFeature, { tolerance: 0.008, highQuality: false });
-        } catch (_) { coastMask = coastSimple; }
       }
     } catch (e) {
       console.warn('coastline load failed', e);
@@ -1508,9 +1591,10 @@
         name: f.properties.name || `Station ${i}`,
         lng, lat, borough,
       };
-      st.landMass = landMassAt(lng, lat);
+      st.landMass = null;
       return st;
     });
+    invalidateGameCaches();
   }
 
   function bindUI() {
@@ -1566,7 +1650,10 @@
       const lbl = document.getElementById('cb-hide-radius-label');
       if (lbl) lbl.textContent = `${hideRadiusMi.toFixed(2)} mi`;
       clearTimeout(radiusTimer);
-      radiusTimer = setTimeout(notifyChange, 130);
+      radiusTimer = setTimeout(() => {
+        invalidateGameCaches();
+        notifyChange('full');
+      }, IS_MOBILE ? 220 : 130);
     });
   }
 
