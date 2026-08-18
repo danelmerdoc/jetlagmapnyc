@@ -531,6 +531,37 @@ window.JetLagGeo = (function () {
     return moved;
   }
 
+  const TILEQUERY = 'https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery';
+
+  /**
+   * Align airport pins to Mapbox Streets poi_label icons (same source as Citi Bike
+   * station coords). This is the authoritative POI location on Standard maps.
+   */
+  async function snapAirportsViaTilequery(airports, token) {
+    if (!token || String(token).indexOf('YOUR_MAPBOX') === 0 || !airports?.length) return airports;
+    await Promise.all(airports.map(async (a) => {
+      try {
+        const url = `${TILEQUERY}/${a.lng},${a.lat}.json`
+          + '?radius=1200&limit=25&layers=poi_label'
+          + `&access_token=${encodeURIComponent(token)}`;
+        const data = await fetch(url).then(r => r.ok ? r.json() : null);
+        let best = null;
+        let bestScore = 40;
+        for (const f of data?.features || []) {
+          const p = f.properties || {};
+          const distM = p.tilequery?.distance ?? Infinity;
+          if (distM > 1200) continue;
+          const c = featureLngLat(f);
+          if (!c) continue;
+          const score = scoreMapboxAirport(a, { name: p.name || '', maki: p.maki || p.class }, distM);
+          if (score > bestScore) { bestScore = score; best = c; }
+        }
+        if (best) { a.lng = best[0]; a.lat = best[1]; }
+      } catch (_) { /* keep seed */ }
+    }));
+    return airports;
+  }
+
   /**
    * Geocode each airport with Mapbox's own place result (the pin the geocoder
    * shares with Standard maps), then optionally refine from the live map.
@@ -581,6 +612,7 @@ window.JetLagGeo = (function () {
     bisectorBetween, bisectorSignedMiles, bisectorHalfPlane, bisectorLine,
     localFrame, flattenRings, minDistanceToRingsMi, MI_PER_DEG_LAT,
     buildSegmentIndex, minDistanceIndexedMi,
-    voronoiCellContaining, voronoiBoundaryLines, snapAirportsToMapbox, snapAirportsFromMap, unionMany, safePoly,
+    voronoiCellContaining, voronoiBoundaryLines,
+    snapAirportsViaTilequery, snapAirportsToMapbox, snapAirportsFromMap, unionMany, safePoly,
   };
 })();

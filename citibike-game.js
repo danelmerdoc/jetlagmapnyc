@@ -2,12 +2,27 @@
 (function () {
   const Geo = () => window.JetLagGeo;
   const COLORS = ['#7c4dff', '#2563eb', '#0d9488', '#db2777', '#ea580c', '#4f46e5'];
-  const STORAGE_KEY = 'jetlagCitibikeQuestionsV5';
+  const STORAGE_KEY = 'jetlagCitibikeQuestionsV6';
   const BOROUGHS = ['Manhattan', 'Bronx', 'Brooklyn', 'Queens', 'Staten Island', 'Jersey'];
   const AIRPORTS = [
     { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7351534, lng: -73.9729007 },
     { id: 'lga', code: 'LGA', name: 'LaGuardia Airport', lat: 40.7757145, lng: -73.8733640 },
     { id: 'jfk', code: 'JFK', name: 'John F. Kennedy International Airport', lat: 40.6429479, lng: -73.7793734 },
+  ];
+  const COMMERCIAL_AIRPORTS = AIRPORTS.filter(a => a.id === 'lga' || a.id === 'jfk');
+  const CAST_COST = {
+    radius: { draw: 2, pick: 1, name: 'Radar' },
+    thermometer: { draw: 2, pick: 1, name: 'Thermometer' },
+    matching: { draw: 3, pick: 1, name: 'Matching' },
+    measuring: { draw: 3, pick: 1, name: 'Measuring' },
+  };
+  const MATCH_SUBS = [
+    ['borough', 'Borough'],
+    ['airport', 'Closest airport'],
+  ];
+  const MEASURE_SUBS = [
+    ['coastline', 'Coastline'],
+    ['airport', 'Nearest commercial airport'],
   ];
 
   let colorIdx = 0;
@@ -19,20 +34,8 @@
   let coastSimple = null;
   let coastMask = null;
   let gameArea = null;
+  let landMask = null;
   let onChange = null;
-
-  /**
-   * Questions were briefly saved as "matching"/"measuring" with a subtype. Those
-   * rows would render as an empty card here, so fold them back onto the type they
-   * were built from and drop any that have no equivalent.
-   */
-  function migrateQuestion(q) {
-    if (q.type === 'matching') q.type = q.subtype === 'airport' ? 'airport' : 'borough';
-    else if (q.type === 'measuring') q.type = q.subtype === 'coastline' ? 'coastline' : null;
-    delete q.subtype;
-    if (q.type === 'borough' && !q.borough) q.borough = 'Manhattan';
-    return q.type != null;
-  }
 
   function nextColor() {
     const c = COLORS[colorIdx % COLORS.length];
@@ -40,21 +43,29 @@
     return c;
   }
 
+  function migrateQuestion(q) {
+    if (q.type === 'borough') { q.type = 'matching'; q.subtype = 'borough'; }
+    else if (q.type === 'airport') { q.type = 'matching'; q.subtype = 'airport'; }
+    else if (q.type === 'coastline') { q.type = 'measuring'; q.subtype = 'coastline'; }
+    if (q.type === 'matching' && !q.subtype) q.subtype = 'borough';
+    if (q.type === 'measuring' && !q.subtype) q.subtype = 'coastline';
+    if (q.open == null) q.open = false;
+    if (q.type === 'thermometer') {
+      if (!q.colorA) q.colorA = q.color || COLORS[0];
+      if (!q.colorB) q.colorB = COLORS[(COLORS.indexOf(q.colorA) + 2) % COLORS.length];
+    }
+    return q.type === 'radius' || q.type === 'thermometer' || q.type === 'matching' || q.type === 'measuring';
+  }
+
   function load() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
+        || localStorage.getItem('jetlagCitibikeQuestionsV5')
         || localStorage.getItem('jetlagCitibikeQuestionsV4')
         || localStorage.getItem('jetlagCitibikeQuestionsV3');
       if (raw) questions = JSON.parse(raw);
     } catch (_) { questions = []; }
     questions = questions.filter(migrateQuestion);
-    questions.forEach(q => {
-      if (q.open == null) q.open = false;
-      if (q.type === 'thermometer') {
-        if (!q.colorA) q.colorA = q.color || COLORS[0];
-        if (!q.colorB) q.colorB = COLORS[(COLORS.indexOf(q.colorA) + 2) % COLORS.length];
-      }
-    });
   }
 
   function save() {
@@ -189,13 +200,35 @@
     return (q.unit === 'kilometers') ? r / 1.609344 : r;
   }
 
-  function nearestAirport(pt) {
+  function nearestAirport(pt, list) {
+    const pool = list || AIRPORTS;
     let best = null, bestD = Infinity;
-    for (const a of AIRPORTS) {
+    for (const a of pool) {
       const d = distMi(pt, a);
       if (d < bestD) { bestD = d; best = a; }
     }
     return { airport: best, miles: bestD };
+  }
+
+  function nearestCommercial(pt) {
+    return nearestAirport(pt, COMMERCIAL_AIRPORTS);
+  }
+
+  function usesCenter(q) {
+    return q.type === 'radius' || q.type === 'matching' || q.type === 'measuring';
+  }
+
+  function costOf(q) {
+    return CAST_COST[q.type] || CAST_COST.radius;
+  }
+
+  function costLabel(q) {
+    const c = costOf(q);
+    return `${c.name} · draw ${c.draw} pick ${c.pick}`;
+  }
+
+  function cardsDrawn() {
+    return questions.reduce((n, q) => n + (costOf(q).draw || 0), 0);
   }
 
   const NJ_BOX = [-74.35, 40.55, -73.85, 41.05];
@@ -232,9 +265,6 @@
   function boroughLand(name) {
     if (boroughLandCache[name] !== undefined) return boroughLandCache[name];
     const poly = boroughPolys[name] || null;
-    // A saved question can ask for a borough before the outline file has arrived.
-    // Caching the miss would leave every station filed under Jersey for the rest
-    // of the session, so wait and answer again once the data is in.
     if (!poly) return null;
     let land = poly;
     if (poly && poly.geometry.type === 'MultiPolygon') {
@@ -254,6 +284,30 @@
     }
     boroughLandCache[name] = land;
     return land;
+  }
+
+  function boroughAt(lng, lat) {
+    if (![lng, lat].every(Number.isFinite)) return null;
+    for (const name of BOROUGHS) {
+      if (name === 'Jersey') continue;
+      const land = boroughLand(name);
+      if (land && turf.booleanPointInPolygon([lng, lat], land)) return name;
+    }
+    // Water (Hudson, East River) is not Jersey. Snap to the nearest land mass.
+    let best = 'Jersey';
+    let bestD = Infinity;
+    for (const name of BOROUGHS) {
+      const index = boroughIndex(name);
+      if (!index) continue;
+      const d = Geo().minDistanceIndexedMi(index, lng, lat);
+      if (d < bestD) { bestD = d; best = name; }
+    }
+    return best;
+  }
+
+  function seekerBorough(q) {
+    if (q.lat != null && q.lng != null) return boroughAt(q.lng, q.lat);
+    return q.borough || null;
   }
 
   const boroughMaskCache = {};
@@ -281,7 +335,6 @@
     const njBox = turf.bboxPolygon(NJ_BOX);
     const nycNames = BOROUGHS.filter(b => b !== 'Jersey');
     const lands = nycNames.map(b => boroughLand(b)).filter(Boolean);
-    // Subtracting only some of the city would hand its missing half to Jersey.
     if (lands.length < nycNames.length) return njBox;
     try {
       const coarse = lands.map(p => {
@@ -336,7 +389,6 @@
     return otherLandCache[name];
   }
 
-  /** Drop everything derived from the borough outlines, e.g. once they load. */
   function clearBoroughCaches() {
     [boroughLandCache, boroughMaskCache, boroughIndexCache, boroughEdgeCache, otherLandCache]
       .forEach(cache => { for (const k of Object.keys(cache)) delete cache[k]; });
@@ -436,13 +488,15 @@
       return q.answer === 'warmer' ? x > -h - eps : x < h + eps;
     }
 
-    if (q.type === 'borough') {
+    if (q.type === 'matching' && q.subtype === 'borough') {
+      const boro = seekerBorough(q);
+      if (!boro) return true;
       const possible = possibleBoroughs(st);
-      if (q.answer === 'same') return possible.includes(q.borough);
-      return possible.some(b => b !== q.borough);
+      if (q.answer === 'same') return possible.includes(boro);
+      return possible.some(b => b !== boro);
     }
 
-    if (q.type === 'airport') {
+    if (q.type === 'matching' && q.subtype === 'airport') {
       if (q.lat == null) return true;
       const seeker = nearestAirport({ lat: q.lat, lng: q.lng }).airport;
       if (!seeker) return true;
@@ -451,11 +505,19 @@
       return possible.some(id => id !== seeker.id);
     }
 
-    if (q.type === 'coastline') {
+    if (q.type === 'measuring' && q.subtype === 'coastline') {
       if (q.lat == null || !coastFeature) return true;
       const measure = distToCoast(q.lat, q.lng);
       const dists = coastDistances();
       const d = dists ? dists[st.idx] : distToCoast(st.lat, st.lng);
+      if (q.answer === 'closer') return d - h <= measure + eps;
+      return d + h >= measure - eps;
+    }
+
+    if (q.type === 'measuring' && q.subtype === 'airport') {
+      if (q.lat == null) return true;
+      const measure = nearestCommercial({ lat: q.lat, lng: q.lng }).miles;
+      const d = nearestCommercial(st).miles;
       if (q.answer === 'closer') return d - h <= measure + eps;
       return d + h >= measure - eps;
     }
@@ -468,7 +530,7 @@
     for (const q of questions) {
       if (q.answer == null) continue;
       parts.push([
-        q.id, q.type, q.answer, q.lat, q.lng, q.latA, q.lngA,
+        q.id, q.type, q.subtype, q.answer, q.lat, q.lng, q.latA, q.lngA,
         q.latB, q.lngB, q.radius, q.unit, q.borough,
       ].join(','));
     }
@@ -613,25 +675,30 @@
         area = Geo().modifyMapData(area, c, q.answer === 'within');
       } else if (q.type === 'thermometer' && q.latA != null && q.latB != null) {
         area = Geo().modifyMapData(area, Geo().thermometerRegion(q, q.answer === 'warmer'), true);
-      } else if (q.type === 'borough') {
+      } else if (q.type === 'matching' && q.subtype === 'borough') {
+        const boro = seekerBorough(q);
         if (q.answer === 'same') {
-          const poly = boroughPoly(q.borough);
+          const poly = boro && boroughPoly(boro);
           if (poly) area = Geo().modifyMapData(area, poly, true);
-        } else {
-          const other = landExcept(q.borough);
+        } else if (boro) {
+          const other = landExcept(boro);
           if (other) area = Geo().modifyMapData(area, other, true);
         }
-      } else if (q.type === 'airport' && q.lat != null) {
+      } else if (q.type === 'matching' && q.subtype === 'airport' && q.lat != null) {
         const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, AIRPORTS);
         if (cell) area = Geo().modifyMapData(area, cell, q.answer === 'same');
-      } else if (q.type === 'coastline' && q.lat != null && coastFeature) {
+      } else if (q.type === 'measuring' && q.subtype === 'coastline' && q.lat != null && coastFeature) {
         const band = coastBand(distToCoast(q.lat, q.lng));
+        if (band) area = Geo().modifyMapData(area, band, q.answer === 'closer');
+      } else if (q.type === 'measuring' && q.subtype === 'airport' && q.lat != null) {
+        const m = nearestCommercial({ lat: q.lat, lng: q.lng }).miles;
+        const circles = COMMERCIAL_AIRPORTS.map(a =>
+          turf.circle([a.lng, a.lat], m, { steps: 64, units: 'miles' }));
+        const band = Geo().unionMany(circles);
         if (band) area = Geo().modifyMapData(area, band, q.answer === 'closer');
       }
     }
 
-    // Nothing outside the boroughs is ever in play, so clip once at the end. The
-    // per-question steps stay on the cheap WORLD fast path until then.
     if (gameArea) area = Geo().intersect(area, gameArea) || area;
 
     areaCache = { key, area };
@@ -639,6 +706,21 @@
   }
 
   let maskCache = { key: null, mask: null, border: null };
+
+  /** Gray only on land outside the possible zone — waterways stay clear. */
+  function landEliminatedMask(possible) {
+    if (!landMask || !possible) return EMPTY_FC;
+    const land = Geo().safePoly(landMask);
+    const play = Geo().safePoly(possible);
+    if (!land || !play) return EMPTY_FC;
+    try {
+      const gray = turf.difference(turf.featureCollection([land, play]));
+      if (!gray) return EMPTY_FC;
+      return { type: 'FeatureCollection', features: [gray] };
+    } catch (_) {
+      return EMPTY_FC;
+    }
+  }
 
   function ensureMaskCache() {
     const key = answeredKey();
@@ -651,7 +733,7 @@
     const f = Geo().safePoly(possible);
     maskCache = {
       key,
-      mask: Geo().holedMask(possible),
+      mask: landEliminatedMask(possible),
       border: f ? { type: 'FeatureCollection', features: [f] } : EMPTY_FC,
     };
     return maskCache;
@@ -692,11 +774,11 @@
             kind: 'thermo-mid', id: q.id, color: q.colorB || q.color,
           }));
         }
-      } else if (q.type === 'coastline' && q.lat != null) {
+      } else if (q.type === 'measuring' && q.subtype === 'coastline' && q.lat != null) {
         features.push(turf.feature(turf.point([q.lng, q.lat]).geometry, {
           kind: 'coast-point', id: q.id, color: q.color,
         }));
-      } else if (q.type === 'airport' && q.lat != null) {
+      } else if (q.type === 'matching' && q.subtype === 'airport' && q.lat != null) {
         for (const a of AIRPORTS) {
           features.push(turf.feature(turf.point([a.lng, a.lat]).geometry, {
             kind: 'airport', id: q.id, code: a.code, name: a.name, color: q.color,
@@ -707,18 +789,20 @@
           line.properties = { kind: 'airport-edge', id: q.id, color: q.color };
           features.push(line);
         }
+      } else if (q.type === 'measuring' && q.subtype === 'airport' && q.lat != null) {
+        const m = nearestCommercial({ lat: q.lat, lng: q.lng }).miles;
+        for (const a of COMMERCIAL_AIRPORTS) {
+          features.push(turf.feature(turf.point([a.lng, a.lat]).geometry, {
+            kind: 'airport', id: q.id, code: a.code, name: a.name, color: q.color,
+          }));
+          const circle = turf.circle([a.lng, a.lat], m, { steps: 64, units: 'miles' });
+          circle.properties = { kind: 'measure-airport-circle', id: q.id, color: q.color };
+          features.push(circle);
+        }
       }
     }
     return { type: 'FeatureCollection', features };
   }
-
-  const TYPE_OPTS = [
-    ['radius', 'Radius Question'],
-    ['thermometer', 'Thermometer Question'],
-    ['coastline', 'Coastline Question'],
-    ['borough', 'Same Borough'],
-    ['airport', 'Same Airport'],
-  ];
 
   const ICON = {
     edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>',
@@ -733,14 +817,15 @@
   };
 
   function questionTitle(q, index) {
-    if (q.type === 'borough' || q.type === 'airport' || q.type === 'coastline') {
-      const n = questions.slice(0, index + 1).filter(x =>
-        x.type === 'borough' || x.type === 'airport' || x.type === 'coastline').length;
-      return `Measuring ${n}`;
-    }
     const n = questions.slice(0, index + 1).filter(x => x.type === q.type).length;
-    if (q.type === 'radius') return `Radius ${n}`;
+    if (q.type === 'radius') return `Radar ${n}`;
     if (q.type === 'thermometer') return `Thermometer ${n}`;
+    if (q.type === 'matching') {
+      return q.subtype === 'airport' ? `Matching ${n} · Airport` : `Matching ${n} · Borough`;
+    }
+    if (q.type === 'measuring') {
+      return q.subtype === 'airport' ? `Measuring ${n} · Airport` : `Measuring ${n} · Coastline`;
+    }
     return `Question ${n}`;
   }
 
@@ -778,6 +863,8 @@
     const el = document.getElementById('cb-game-list');
     if (!el) return;
     el.innerHTML = '';
+    const tot = document.getElementById('cb-cost-total');
+    if (tot) tot.textContent = `Cards drawn: ${cardsDrawn()}`;
     if (!questions.length) {
       el.innerHTML = '<p class="game-hint">Add a question, then open it to place pins on the map.</p>';
       return;
@@ -786,15 +873,13 @@
       const div = document.createElement('div');
       div.className = 'cb-item' + (q.open ? '' : ' collapsed');
       div.dataset.id = q.id;
-      const typeSel = TYPE_OPTS.map(([id, label]) =>
-        `<option value="${id}"${q.type === id ? ' selected' : ''}>${label}</option>`).join('');
       div.innerHTML = `
         <div class="cb-item-head">
           <span class="cb-item-chev">${q.open ? ICON.chevDown : ICON.chevRight}</span>
           <span>${questionTitle(q, i)}</span>
+          <span class="q-cost">${costLabel(q)}</span>
         </div>
         <div class="cb-item-body">
-          <select class="q-type" data-id="${q.id}">${typeSel}</select>
           ${renderQuestionFields(q)}
           <div class="q-foot">
             <button type="button" class="q-up" data-id="${q.id}" ${i === 0 ? 'disabled' : ''} title="Move up">${ICON.up}</button>
@@ -830,9 +915,6 @@
         save(); notifyChange(); renderList();
       });
     });
-    el.querySelectorAll('.q-type').forEach(sel => {
-      sel.addEventListener('change', () => changeType(sel.dataset.id, sel.value));
-    });
     bindQuestionInputs(el);
   }
 
@@ -859,26 +941,41 @@
         ${dist != null ? `<p class="game-hint">Distance: <strong>${dist.toFixed(3)} Miles</strong></p>` : ''}
         ${resultRow(q, { ans: 'colder', label: 'Colder' }, { ans: 'warmer', label: 'Warmer' })}`;
     }
-    if (q.type === 'coastline') {
+    if (q.type === 'matching') {
+      const sub = MATCH_SUBS.map(([id, label]) =>
+        `<option value="${id}"${q.subtype === id ? ' selected' : ''}>${label}</option>`).join('');
+      if (q.subtype === 'airport') {
+        const near = q.lat != null ? nearestAirport({ lat: q.lat, lng: q.lng }) : null;
+        return `
+          <select class="q-subtype" data-id="${q.id}">${sub}</select>
+          ${locCard(q, 'Your location', 'center', q.lat, q.lng)}
+          ${near ? `<p class="game-hint">Your nearest airport: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
+          ${resultRow(q, { ans: 'different', label: 'Different' }, { ans: 'same', label: 'Same as me' })}`;
+      }
+      const boro = seekerBorough(q);
+      return `
+        <select class="q-subtype" data-id="${q.id}">${sub}</select>
+        ${locCard(q, 'Your location', 'center', q.lat, q.lng)}
+        ${boro ? `<p class="game-hint">Your borough: <strong>${boro}</strong></p>` : '<p class="game-hint">Place your pin to detect the borough.</p>'}
+        ${resultRow(q, { ans: 'different', label: 'Different' }, { ans: 'same', label: 'Same as me' })}`;
+    }
+    if (q.type === 'measuring') {
+      const sub = MEASURE_SUBS.map(([id, label]) =>
+        `<option value="${id}"${q.subtype === id ? ' selected' : ''}>${label}</option>`).join('');
+      if (q.subtype === 'airport') {
+        const near = q.lat != null ? nearestCommercial({ lat: q.lat, lng: q.lng }) : null;
+        return `
+          <select class="q-subtype" data-id="${q.id}">${sub}</select>
+          ${locCard(q, 'Your location', 'center', q.lat, q.lng)}
+          ${near ? `<p class="game-hint">Nearest commercial airport: <strong>${near.airport.name}</strong> (${near.miles.toFixed(1)} mi)</p>` : ''}
+          ${resultRow(q, { ans: 'further', label: 'Hider Further' }, { ans: 'closer', label: 'Hider Closer' })}`;
+      }
       const d = q.lat != null ? distToCoast(q.lat, q.lng) : null;
       return `
-        ${locCard(q, 'Location', 'center', q.lat, q.lng)}
+        <select class="q-subtype" data-id="${q.id}">${sub}</select>
+        ${locCard(q, 'Your location', 'center', q.lat, q.lng)}
         ${d != null && isFinite(d) ? `<p class="game-hint">${d.toFixed(2)} mi from coast</p>` : ''}
         ${resultRow(q, { ans: 'further', label: 'Hider Further' }, { ans: 'closer', label: 'Hider Closer' })}`;
-    }
-    if (q.type === 'borough') {
-      const opts = BOROUGHS.map(b =>
-        `<option value="${b}"${q.borough === b ? ' selected' : ''}>${b}</option>`).join('');
-      return `
-        <select class="q-borough" data-id="${q.id}">${opts}</select>
-        ${resultRow(q, { ans: 'different', label: 'Different' }, { ans: 'same', label: 'Same borough' })}`;
-    }
-    if (q.type === 'airport') {
-      const near = q.lat != null ? nearestAirport({ lat: q.lat, lng: q.lng }) : null;
-      return `
-        ${locCard(q, 'Location', 'center', q.lat, q.lng)}
-        ${near ? `<p class="game-hint">Nearest: ${near.airport.name} (${near.miles.toFixed(1)} mi)</p>` : ''}
-        ${resultRow(q, { ans: 'different', label: 'Different' }, { ans: 'same', label: 'Same airport' })}`;
     }
     return '';
   }
@@ -888,7 +985,7 @@
       ta.addEventListener('change', () => updateQuestionFromInputs(ta.dataset.id));
       ta.addEventListener('blur', () => updateQuestionFromInputs(ta.dataset.id));
     });
-    el.querySelectorAll('.q-radius, .q-unit, .q-borough').forEach(inp => {
+    el.querySelectorAll('.q-radius, .q-unit, .q-subtype').forEach(inp => {
       inp.addEventListener('change', () => updateQuestionFromInputs(inp.dataset.id));
     });
     el.querySelectorAll('.q-answer button').forEach(btn => {
@@ -942,20 +1039,23 @@
     if (!q) return;
     const root = document.querySelector(`.cb-item[data-id="${id}"]`);
     if (!root) return;
-    if (q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') {
+    if (q.type === 'radius' || usesCenter(q)) {
       const pt = parseCoord(root.querySelector('.q-coord')?.value);
       if (pt) { q.lat = pt.lat; q.lng = pt.lng; }
       if (q.type === 'radius') {
         q.radius = parseFloat(root.querySelector('.q-radius')?.value) || q.radius;
         q.unit = root.querySelector('.q-unit')?.value || 'miles';
       }
+      const sub = root.querySelector('.q-subtype')?.value;
+      if (sub) q.subtype = sub;
+      if (q.type === 'matching' && q.subtype === 'borough' && q.lat != null) {
+        q.borough = boroughAt(q.lng, q.lat);
+      }
     } else if (q.type === 'thermometer') {
       const a = parseCoord(root.querySelector('.q-coord-a')?.value);
       const b = parseCoord(root.querySelector('.q-coord-b')?.value);
       if (a) { q.latA = a.lat; q.lngA = a.lng; }
       if (b) { q.latB = b.lat; q.lngB = b.lng; }
-    } else if (q.type === 'borough') {
-      q.borough = root.querySelector('.q-borough')?.value || q.borough;
     }
     save(); notifyChange(); renderList();
   }
@@ -963,7 +1063,10 @@
   function setQuestionPoint(id, field, lat, lng) {
     const q = questions.find(x => x.id === id);
     if (!q) return;
-    if (field === 'center') { q.lat = lat; q.lng = lng; }
+    if (field === 'center') {
+      q.lat = lat; q.lng = lng;
+      if (q.type === 'matching' && q.subtype === 'borough') q.borough = boroughAt(lng, lat);
+    }
     else if (field === 'A') { q.latA = lat; q.lngA = lng; }
     else if (field === 'B') { q.latB = lat; q.lngB = lng; }
     save(); notifyChange(); renderList();
@@ -979,16 +1082,18 @@
     save(); notifyChange(); renderList();
   }
 
-  function changeType(id, type) {
+  function changeType(id, type, subtype) {
     const q = questions.find(x => x.id === id);
-    if (!q || q.type === type) return;
+    if (!q) return;
     q.type = type;
     q.answer = null;
+    if (type === 'matching') q.subtype = subtype || 'borough';
+    else if (type === 'measuring') q.subtype = subtype || 'coastline';
+    else q.subtype = null;
     if (type === 'radius') {
       if (q.radius == null) q.radius = parseFloat(document.getElementById('cb-radius-val')?.value) || 1;
       if (!q.unit) q.unit = 'miles';
     }
-    if (type === 'borough' && !q.borough) q.borough = 'Manhattan';
     if (type === 'thermometer') {
       if (!q.colorA) q.colorA = q.color || nextColor();
       if (!q.colorB) q.colorB = nextColor();
@@ -1000,11 +1105,14 @@
     const q = questions.find(x => x.id === id);
     if (!q || !center) return false;
     let changed = false;
-    if (q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') {
+    if (usesCenter(q)) {
       if (q.lat == null) {
         q.lat = center.lat;
         q.lng = center.lng;
         changed = true;
+      }
+      if (q.type === 'matching' && q.subtype === 'borough') {
+        q.borough = boroughAt(q.lng, q.lat);
       }
     } else if (q.type === 'thermometer') {
       if (q.latA == null) {
@@ -1022,7 +1130,7 @@
     return changed;
   }
 
-  function addQuestion(type) {
+  function addQuestion(type, subtype) {
     const base = { id: crypto.randomUUID(), type, color: nextColor(), answer: null, open: true };
     if (type === 'radius') {
       const radius = parseFloat(document.getElementById('cb-radius-val')?.value) || 1;
@@ -1032,10 +1140,10 @@
       const colorA = base.color;
       const colorB = nextColor();
       questions.push({ ...base, colorA, colorB, color: colorA, latA: null, lngA: null, latB: null, lngB: null });
-    } else if (type === 'borough') {
-      questions.push({ ...base, borough: 'Manhattan' });
-    } else if (type === 'airport' || type === 'coastline') {
-      questions.push({ ...base, lat: null, lng: null });
+    } else if (type === 'matching') {
+      questions.push({ ...base, subtype: subtype || 'borough', lat: null, lng: null, borough: null });
+    } else if (type === 'measuring') {
+      questions.push({ ...base, subtype: subtype || 'coastline', lat: null, lng: null });
     }
     save(); renderList(); notifyChange();
     const c = window.JetLagCitibikeApp?.mapCenter?.();
@@ -1056,11 +1164,12 @@
   }
 
   async function initStationData(geojson) {
-    const [boro, coast, area] = await Promise.all([
+    const [boro, coast, area, land] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
       fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
       fetch('data/game_area.geojson').then(r => r.json()).catch(() => null),
-      Geo().snapAirportsToMapbox(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
+      fetch('data/land_mask.geojson').then(r => r.json()).catch(() => null),
+      Geo().snapAirportsViaTilequery(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
     airportBisectors.clear();
     try {
@@ -1072,6 +1181,7 @@
     }
     clearBoroughCaches();
     gameArea = area?.features?.[0] || null;
+    landMask = land?.features?.[0] || null;
     areaCache = { key: null, area: null };
     maskCache = { key: null, mask: null, border: null };
     activeCache = { key: null, list: null };
@@ -1100,10 +1210,6 @@
       try { hit = turf.simplify(poly, { tolerance: 0.0002, highQuality: false }); } catch (_) { hit = poly; }
       return { name, poly: hit, box: poly ? turf.bbox(poly) : [0, 0, 0, 0] };
     }).filter(b => b.poly);
-    if (boroBoxes.length < BOROUGHS.length - 1) {
-      console.warn('borough outlines missing, station boroughs will be wrong:',
-        boroBoxes.map(b => b.name).join(', ') || 'none loaded');
-    }
 
     stations = (geojson.features || []).map((f, i) => {
       const [lng, lat] = f.geometry.coordinates;
@@ -1124,11 +1230,48 @@
   }
 
   function bindUI() {
-    document.getElementById('cb-add-radius')?.addEventListener('click', () => addQuestion('radius'));
-    document.getElementById('cb-add-thermo')?.addEventListener('click', () => addQuestion('thermometer'));
-    document.getElementById('cb-add-borough')?.addEventListener('click', () => addQuestion('borough'));
-    document.getElementById('cb-add-airport')?.addEventListener('click', () => addQuestion('airport'));
-    document.getElementById('cb-add-coast')?.addEventListener('click', () => addQuestion('coastline'));
+    const kindBtns = document.querySelectorAll('#cb-q-kind button');
+    const subRow = document.getElementById('cb-q-subrow');
+    const subSel = document.getElementById('cb-q-subtype');
+    const costHint = document.getElementById('cb-q-cost-hint');
+    const radiusOpts = document.getElementById('cb-radius-opts');
+
+    function currentKind() {
+      return document.querySelector('#cb-q-kind button.active')?.dataset.kind || 'radius';
+    }
+
+    function syncKindUI() {
+      const kind = currentKind();
+      const cost = CAST_COST[kind];
+      if (costHint && cost) costHint.textContent = `${cost.name} · draw ${cost.draw} pick ${cost.pick}`;
+      if (radiusOpts) radiusOpts.hidden = kind !== 'radius';
+      if (subRow) subRow.hidden = kind !== 'matching' && kind !== 'measuring';
+      const subLabel = document.getElementById('cb-q-sublabel');
+      if (subLabel) {
+        subLabel.textContent = kind === 'measuring'
+          ? 'Compared to me, closer or further to…'
+          : 'Is your … the same as mine?';
+      }
+      if (subSel && (kind === 'matching' || kind === 'measuring')) {
+        const opts = kind === 'matching' ? MATCH_SUBS : MEASURE_SUBS;
+        subSel.innerHTML = opts.map(([id, label]) => `<option value="${id}">${label}</option>`).join('');
+      }
+    }
+
+    kindBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.classList.contains('active')) return;
+        kindBtns.forEach(b => b.classList.toggle('active', b === btn));
+        syncKindUI();
+      });
+    });
+    syncKindUI();
+
+    document.getElementById('cb-add-question')?.addEventListener('click', () => {
+      const kind = currentKind();
+      const subtype = subSel?.value;
+      addQuestion(kind, subtype);
+    });
     document.getElementById('cb-clear-all')?.addEventListener('click', () => {
       if (!confirm('Remove all questions?')) return;
       questions = []; save(); notifyChange(); renderList();
@@ -1138,7 +1281,6 @@
       hideRadiusMi = Math.max(0.05, parseFloat(e.target.value) || 0.2);
       const lbl = document.getElementById('cb-hide-radius-label');
       if (lbl) lbl.textContent = `${hideRadiusMi.toFixed(2)} mi`;
-      // The radius invalidates every cache, so redraw once the drag settles.
       clearTimeout(radiusTimer);
       radiusTimer = setTimeout(notifyChange, 130);
     });
@@ -1150,12 +1292,12 @@
     parseCoord, fmtCoord, bindUI, renderList, initStationData,
     getActiveStations, activeStationFeatures, overlapZonesGeoJSON, mergedZonesGeoJSON,
     questionsGeoJSON, eliminatedMask, possibleAreaGeoJSON, stationCircle, setQuestionPoint,
-    ensureQuestionCoords, distMi,
+    ensureQuestionCoords, distMi, usesCenter,
     getQuestions: () => questions,
     get hideRadiusMi() { return hideRadiusMi; },
     get stations() { return stations; },
     set onChange(fn) { onChange = fn; },
     airportsMoved,
-    BOROUGHS, AIRPORTS,
+    BOROUGHS, AIRPORTS, CAST_COST,
   };
 })();

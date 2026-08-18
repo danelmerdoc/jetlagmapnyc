@@ -204,7 +204,7 @@
     for (const q of Game().getQuestions()) {
       if (!q.open) continue;
       Game().ensureQuestionCoords(q.id, center);
-      if ((q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') && q.lat != null) {
+      if (Game().usesCenter(q) && q.lat != null) {
         const m = new mapboxgl.Marker({ element: pinEl(q.color), draggable: true, anchor: 'bottom' })
           .setLngLat([q.lng, q.lat])
           .addTo(map);
@@ -574,6 +574,15 @@
           'line-color': ['get', 'color'],
           'line-width': theme === 'dark' ? 2.8 : 2.4,
           'line-opacity': theme === 'dark' ? 0.95 : 0.88,
+        },
+      });
+      addLayer({
+        id: 'cb-questions-measure-airport', type: 'line', source: 'cb-questions',
+        filter: ['==', ['get', 'kind'], 'measure-airport-circle'],
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': theme === 'dark' ? 2.4 : 2,
+          'line-opacity': theme === 'dark' ? 0.85 : 0.75,
         },
       });
     }

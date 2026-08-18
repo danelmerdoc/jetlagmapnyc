@@ -1,15 +1,13 @@
 #!/usr/bin/env node
 /**
- * Build the playable game area: the five boroughs plus the New Jersey side that
- * has Citi Bike docks (Hudson County — Jersey City, Hoboken, Bayonne, and the
- * towns above them).
+ * Build Citi Bike playable + land-mask polygons.
  *
- * The union of detailed municipal outlines takes several seconds, so it is done
- * here and committed to data/game_area.geojson. The web app loads the result and
- * grays out everything outside it.
+ * Playable (game_area.geojson): Manhattan, Bronx, Brooklyn, Queens, Hoboken,
+ * and Jersey City — no Staten Island, no other NJ.
  *
- * Borough outlines come from data/nyc_boroughs.geojson; the New Jersey boundary
- * comes from OpenStreetMap via Nominatim, cached in data/nj_hudson.geojson.
+ * Land mask (land_mask.geojson): all five NYC boroughs plus Hudson County NJ.
+ * Gray overlay = land_mask minus the current possible area, so waterways stay
+ * clear and Staten Island / the rest of NJ show as eliminated land.
  *
  * Usage: TURF_PATH=/path/to/@turf/turf node scripts/build-game-area.js
  */
@@ -20,58 +18,100 @@ const turf = require(process.env.TURF_PATH || '@turf/turf');
 
 const DATA = path.join(__dirname, '../data');
 const BOROUGHS = path.join(DATA, 'nyc_boroughs.geojson');
-const NJ_CACHE = path.join(DATA, 'nj_hudson.geojson');
-const OUT = path.join(DATA, 'game_area.geojson');
+const OUT_AREA = path.join(DATA, 'game_area.geojson');
+const OUT_LAND = path.join(DATA, 'land_mask.geojson');
 
-const NOMINATIM = 'https://nominatim.openstreetmap.org/search'
-  + '?county=Hudson%20County&state=New%20Jersey&country=USA'
-  + '&format=json&polygon_geojson=1&limit=1';
+const SIMPLIFY = 0.0002;
+const UA = 'JetLagNYC-map/1.0 (citibike hide and seek)';
 
-/** ~20 m. Fine enough that shorelines still read as shorelines when zoomed in. */
-const SIMPLIFY_TOLERANCE = 0.0002;
-
-async function loadNewJersey() {
-  if (fs.existsSync(NJ_CACHE)) {
-    return JSON.parse(fs.readFileSync(NJ_CACHE, 'utf8'));
+async function nominatim(query, cacheFile) {
+  const cachePath = path.join(DATA, cacheFile);
+  if (fs.existsSync(cachePath)) {
+    return JSON.parse(fs.readFileSync(cachePath, 'utf8')).features[0];
   }
-  const res = await fetch(NOMINATIM, {
-    headers: { 'User-Agent': 'JetLagNYC-map/1.0 (citibike hide and seek)' },
-  });
+  const url = 'https://nominatim.openstreetmap.org/search'
+    + `?${query}&format=json&polygon_geojson=1&limit=1`;
+  const res = await fetch(url, { headers: { 'User-Agent': UA } });
   const hits = await res.json();
-  if (!hits.length || !hits[0].geojson) throw new Error('Nominatim returned no polygon');
-  const f = turf.feature(hits[0].geojson, { name: 'Hudson County', source: 'OpenStreetMap' });
-  const fc = turf.featureCollection([f]);
-  fs.writeFileSync(NJ_CACHE, JSON.stringify(fc));
-  console.log('cached', path.relative(process.cwd(), NJ_CACHE));
-  return fc;
+  if (!hits.length || !hits[0].geojson) throw new Error(`Nominatim miss: ${query}`);
+  const f = turf.feature(hits[0].geojson, { name: hits[0].display_name.split(',')[0] });
+  fs.writeFileSync(cachePath, JSON.stringify(turf.featureCollection([f])));
+  console.log('  cached', cacheFile);
+  return f;
 }
 
-(async () => {
-  const boroughs = JSON.parse(fs.readFileSync(BOROUGHS, 'utf8'));
-  const nj = await loadNewJersey();
-
-  const parts = boroughs.features.concat(nj.features);
-  console.log('unioning', parts.length, 'outlines…');
-
+function unionAll(parts, label) {
   let area = null;
   for (const part of parts) {
     const name = part.properties.BoroName || part.properties.name || 'part';
-    if (!area) { area = part; continue; }
+    if (!area) { area = part; console.log(`  ${label}:`, name); continue; }
     const next = turf.union(turf.featureCollection([area, part]));
     if (!next) throw new Error(`union failed at ${name}`);
     area = next;
     console.log('  +', name);
   }
+  return area;
+}
 
-  const simple = turf.simplify(area, { tolerance: SIMPLIFY_TOLERANCE, highQuality: true });
-  simple.properties = { name: 'Citi Bike game area' };
+(async () => {
+  const boroughs = JSON.parse(fs.readFileSync(BOROUGHS, 'utf8'));
+  const byName = {};
+  for (const f of boroughs.features) byName[f.properties.BoroName] = f;
 
-  fs.writeFileSync(OUT, JSON.stringify(turf.featureCollection([simple])));
+  console.log('Fetching NJ outlines…');
+  const hoboken = await nominatim(
+    'city=Hoboken&county=Hudson+County&state=New+Jersey&country=USA',
+    'nj_hoboken.geojson',
+  );
+  const jerseyCity = await nominatim(
+    'city=Jersey+City&county=Hudson+County&state=New+Jersey&country=USA',
+    'nj_jersey_city.geojson',
+  );
+  const hudson = await nominatim(
+    'county=Hudson+County&state=New+Jersey&country=USA',
+    'nj_hudson.geojson',
+  );
+  const essex = await nominatim(
+    'county=Essex+County&state=New+Jersey&country=USA',
+    'nj_essex.geojson',
+  );
+  const bergen = await nominatim(
+    'county=Bergen+County&state=New+Jersey&country=USA',
+    'nj_bergen.geojson',
+  );
 
-  const sqMi = turf.area(simple) / 2589988;
-  console.log(`\nwrote ${path.relative(process.cwd(), OUT)}`);
-  console.log(`  geometry   ${simple.geometry.type}, ${simple.geometry.coordinates.length} part(s)`);
-  console.log(`  area       ${sqMi.toFixed(1)} sq mi`);
-  console.log(`  bbox       ${turf.bbox(simple).map(v => v.toFixed(4)).join(', ')}`);
-  console.log(`  file size  ${(fs.statSync(OUT).size / 1024).toFixed(0)} KB`);
+  const playableParts = [
+    byName.Manhattan, byName.Bronx, byName.Brooklyn, byName.Queens,
+    hoboken, jerseyCity,
+  ].filter(Boolean);
+
+  console.log('\nUnion playable area…');
+  const playable = turf.simplify(
+    unionAll(playableParts, 'playable'),
+    { tolerance: SIMPLIFY, highQuality: true },
+  );
+  playable.properties = { name: 'Citi Bike playable area' };
+
+  const landParts = boroughs.features.concat(hudson, essex, bergen);
+  console.log('\nUnion land mask…');
+  const land = turf.simplify(
+    unionAll(landParts, 'land'),
+    { tolerance: SIMPLIFY, highQuality: true },
+  );
+  land.properties = { name: 'Citi Bike land mask' };
+
+  fs.writeFileSync(OUT_AREA, JSON.stringify(turf.featureCollection([playable])));
+  fs.writeFileSync(OUT_LAND, JSON.stringify(turf.featureCollection([land])));
+
+  const st = JSON.parse(fs.readFileSync(path.join(DATA, 'citibike_stations.geojson'), 'utf8'));
+  let inside = 0;
+  for (const f of st.features) {
+    if (turf.booleanPointInPolygon(f.geometry.coordinates, playable)) inside++;
+  }
+
+  console.log(`\nwrote ${path.relative(process.cwd(), OUT_AREA)}`);
+  console.log('  playable', (turf.area(playable) / 2589988).toFixed(1), 'sq mi',
+    '| stations inside', inside, '/', st.features.length);
+  console.log('wrote', path.relative(process.cwd(), OUT_LAND));
+  console.log('  land mask', (turf.area(land) / 2589988).toFixed(1), 'sq mi');
 })().catch(e => { console.error(e.message); process.exit(1); });
