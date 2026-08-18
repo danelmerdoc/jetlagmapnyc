@@ -5,9 +5,9 @@
   const STORAGE_KEY = 'jetlagCitibikeQuestionsV6';
   const BOROUGHS = ['Manhattan', 'Bronx', 'Brooklyn', 'Queens', 'Staten Island', 'Jersey'];
   const AIRPORTS = [
-    { id: 'skyports', code: '6N7', name: 'New York Skyports Seaplane Base', lat: 40.7352515, lng: -73.9738763 },
-    { id: 'lga', code: 'LGA', name: 'LaGuardia Airport', lat: 40.7731251, lng: -73.8718178 },
-    { id: 'jfk', code: 'JFK', name: 'John F. Kennedy International Airport', lat: 40.6437681, lng: -73.7818999 },
+    { id: 'skyports', code: '6N7', name: 'New York Skyports Seaplane Base', lat: 40.7351530822051, lng: -73.97290125489235 },
+    { id: 'lga', code: 'LGA', name: 'LaGuardia Airport', lat: 40.77452529579324, lng: -73.87299969792366 },
+    { id: 'jfk', code: 'JFK', name: 'John F. Kennedy International Airport', lat: 40.64611913396743, lng: -73.78425613045692 },
   ];
   const CAST_COST = {
     radius: { draw: 2, pick: 1, name: 'Radar' },

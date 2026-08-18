@@ -4,9 +4,9 @@
   const COLORS = ['#ffb020', '#4da3ff', '#6bcb77', '#ff6b9d', '#c084fc', '#f97316', '#14b8a6'];
   const STORAGE_KEY = 'jetlagNycQuestionsV2';
   const PLAY_AIRPORTS = [
-    { id: 'lga', code: 'LGA', name: 'LaGuardia Airport', lat: 40.7731251, lng: -73.8718178 },
-    { id: 'jfk', code: 'JFK', name: 'John F. Kennedy International Airport', lat: 40.6437681, lng: -73.7818999 },
-    { id: 'skyports', code: '6N7', name: 'New York Skyports Seaplane Base', lat: 40.7352515, lng: -73.9738763 },
+    { id: 'lga', code: 'LGA', name: 'LaGuardia Airport', lat: 40.77452529579324, lng: -73.87299969792366 },
+    { id: 'jfk', code: 'JFK', name: 'John F. Kennedy International Airport', lat: 40.64611913396743, lng: -73.78425613045692 },
+    { id: 'skyports', code: '6N7', name: 'New York Skyports Seaplane Base', lat: 40.7351530822051, lng: -73.97290125489235 },
   ];
 
   let colorIdx = 0;
@@ -325,10 +325,16 @@
 
   function installMapLayers(map) {
     mapRef = map;
-    Geo().snapAirportsToMapbox(PLAY_AIRPORTS, window.MAPBOX_TOKEN).then(() => {
-      recomputeElimination();
-      syncQuestionLayers();
-    }).catch(() => {});
+    const applyAirportSnap = () => {
+      const result = Geo().snapAirportsFromMap(PLAY_AIRPORTS, map) || {};
+      const snapped = new Set(result.snappedIds || []);
+      const missing = PLAY_AIRPORTS.filter(a => !snapped.has(a.id));
+      const finish = () => { recomputeElimination(); syncQuestionLayers(); };
+      if (!missing.length) { finish(); return; }
+      Geo().snapAirportsToMapbox(missing, window.MAPBOX_TOKEN).then(finish).catch(finish);
+    };
+    applyAirportSnap();
+    if (map.once) map.once('idle', applyAirportSnap);
     if (!map.getSource('game-elimination')) {
       map.addSource('game-elimination', { type: 'geojson', data: Geo().WORLD });
       map.addLayer({

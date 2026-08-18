@@ -481,19 +481,22 @@ window.JetLagGeo = (function () {
     jfk: ['kennedy'],
   };
 
-  const AIRPORT_SEARCH_Q = {
-    skyports: 'New York Skyports Seaplane Base',
-    lga: 'LaGuardia Airport',
-    jfk: 'John F. Kennedy International Airport',
-  };
+  // Mapbox Standard `airport-label` reads composite source-layer `airport_label`
+  // from mapbox-streets-v8-lite (same points as full streets-v8).
+  const AIRPORT_LABEL_TILESETS = [
+    'mapbox.mapbox-streets-v8-lite',
+    'mapbox.mapbox-streets-v8',
+  ];
+  const AIRPORT_SNAP_MAX_DEG = 0.04; // ~2.7 mi; keeps EWR / Teterboro out
 
-  function isAirportPoi(props) {
+  function airportMakiOk(airport, props) {
     const maki = String(props?.maki || '').toLowerCase();
-    const cats = props?.poi_category || [];
-    const category = String(props?.category || props?.class || '').toLowerCase();
-    return maki === 'airport'
-      || (Array.isArray(cats) && cats.includes('airport'))
-      || category.includes('airport');
+    if (maki === 'heliport' || maki === 'parking' || maki === 'parking-garage' || maki === 'harbor') {
+      return false;
+    }
+    if (maki === 'airport') return true;
+    // Seaplane bases use Maki "airfield" on the airport-label layer.
+    return airport.id === 'skyports' && maki === 'airfield';
   }
 
   function airportNameMatches(airport, name) {
@@ -512,57 +515,121 @@ window.JetLagGeo = (function () {
     return null;
   }
 
+  function isAirportLabelLayer(layer) {
+    if (!layer) return false;
+    const sl = String(layer['source-layer'] || '');
+    if (sl === 'airport_label') return true;
+    const id = String(layer.id || '').toLowerCase();
+    return id === 'airport-label' || id === 'airport_label';
+  }
+
+  function collectAirportLabelFeatures(map) {
+    const out = [];
+    const pushAll = (feats) => {
+      if (!feats) return;
+      for (let i = 0; i < feats.length; i++) out.push(feats[i]);
+    };
+
+    const layerIds = [];
+    try {
+      const layers = map.getStyle()?.layers || [];
+      for (const layer of layers) {
+        if (isAirportLabelLayer(layer) && layer.id && map.getLayer(layer.id)) {
+          layerIds.push(layer.id);
+        }
+      }
+    } catch (_) { /* style not ready */ }
+    if (!layerIds.length && map.getLayer?.('airport-label')) layerIds.push('airport-label');
+
+    if (layerIds.length) {
+      try { pushAll(map.queryRenderedFeatures({ layers: layerIds })); } catch (_) { /* missing layer */ }
+    }
+    try { pushAll(map.queryRenderedFeatures()); } catch (_) { /* ignore */ }
+
+    try {
+      const seen = new Set();
+      for (const layer of (map.getStyle()?.layers || [])) {
+        if (!isAirportLabelLayer(layer) || !layer.source) continue;
+        const sl = layer['source-layer'] || 'airport_label';
+        const key = `${layer.source}\0${sl}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        try { pushAll(map.querySourceFeatures(layer.source, { sourceLayer: sl })); } catch (_) { /* unloaded */ }
+      }
+    } catch (_) { /* ignore */ }
+
+    return out;
+  }
+
+  function pickAirportIcon(airport, feats) {
+    let best = null;
+    let bestD = Infinity;
+    for (const f of feats) {
+      const p = f.properties || {};
+      const name = p.name || p.name_en || p.airport_ref || '';
+      if (!airportMakiOk(airport, p) || !airportNameMatches(airport, name)) continue;
+      const c = featureLngLat(f);
+      if (!c) continue;
+      const dLng = c[0] - airport.lng;
+      const dLat = c[1] - airport.lat;
+      if (Math.abs(dLng) > AIRPORT_SNAP_MAX_DEG || Math.abs(dLat) > AIRPORT_SNAP_MAX_DEG) continue;
+      const d2 = dLng * dLng + dLat * dLat;
+      if (d2 < bestD) {
+        bestD = d2;
+        best = c;
+      }
+    }
+    return best;
+  }
+
   /**
-   * Snap only to rendered Mapbox airport POI icons whose names match LGA / JFK /
-   * Skyports. Ignores parking, marinas, hotels, and other airports.
+   * Snap to Mapbox Standard `airport-label` icons (source-layer airport_label).
+   * Matches only LGA / JFK / Skyports by maki + name. Skips parking, marinas,
+   * heliports, hotels, terminal shops, and other airports.
    */
   function snapAirportsFromMap(airports, map) {
-    if (!map || !airports?.length) return false;
-    let feats = [];
-    try { feats = (map.queryRenderedFeatures() || []).slice(); } catch (_) { feats = []; }
+    if (!map || !airports?.length) return { moved: false, snappedIds: [] };
+    const feats = collectAirportLabelFeatures(map);
     let moved = false;
+    const snappedIds = [];
     for (const a of airports) {
-      let best = null;
-      for (const f of feats) {
-        const p = f.properties || {};
-        const name = p.name || p.name_en || '';
-        if (!isAirportPoi(p) || !airportNameMatches(a, name)) continue;
-        const c = featureLngLat(f);
-        if (!c) continue;
-        best = c;
-        break;
-      }
-      if (best && (Math.abs(best[0] - a.lng) > 1e-6 || Math.abs(best[1] - a.lat) > 1e-6)) {
+      const best = pickAirportIcon(a, feats);
+      if (!best) continue;
+      snappedIds.push(a.id);
+      if (Math.abs(best[0] - a.lng) > 1e-7 || Math.abs(best[1] - a.lat) > 1e-7) {
         a.lng = best[0];
         a.lat = best[1];
         moved = true;
       }
     }
-    return moved;
+    return { moved, snappedIds };
+  }
+
+  async function tilequeryAirportLabel(lng, lat, token, tileset) {
+    const url = `https://api.mapbox.com/v4/${tileset}/tilequery/${lng},${lat}.json`
+      + '?layers=airport_label&radius=8000&limit=20'
+      + `&access_token=${encodeURIComponent(token)}`;
+    const data = await fetch(url).then(r => r.ok ? r.json() : null);
+    return data?.features || [];
   }
 
   /**
-   * Align each airport to Mapbox Search Box POIs (poi_category=airport).
-   * Streets-v8 tilequery is the wrong source — it returns terminal shops and
-   * the Skyport parking garage, not the airport pins.
+   * Fallback when the live map has not loaded airport-label tiles yet.
+   * Queries the same airport_label layer Standard draws — never Search Box
+   * or poi_label (those snap to terminal shops / the Skyport garage).
    */
   async function snapAirportsToMapbox(airports, token) {
     if (!token || String(token).indexOf('YOUR_MAPBOX') === 0 || !airports?.length) return airports;
     await Promise.all(airports.map(async (a) => {
       try {
-        const q = encodeURIComponent(AIRPORT_SEARCH_Q[a.id] || a.name);
-        const url = 'https://api.mapbox.com/search/searchbox/v1/forward'
-          + `?q=${q}&proximity=${a.lng},${a.lat}&limit=5`
-          + '&poi_category=airport&types=poi'
-          + `&access_token=${encodeURIComponent(token)}`;
-        const data = await fetch(url).then(r => r.ok ? r.json() : null);
-        const hit = (data?.features || []).find((f) => {
-          const p = f.properties || {};
-          return isAirportPoi(p) && airportNameMatches(a, p.name || p.full_address || '');
-        });
-        const c = featureLngLat(hit);
+        let feats = [];
+        for (const tileset of AIRPORT_LABEL_TILESETS) {
+          feats = await tilequeryAirportLabel(a.lng, a.lat, token, tileset);
+          if (feats.length) break;
+        }
+        const c = pickAirportIcon(a, feats);
         if (c) { a.lng = c[0]; a.lat = c[1]; }
-      } catch (_) { /* keep the Mapbox POI seed */ }
+      } catch (_) { /* keep the airport-label seed */ }
     }));
     return airports;
   }

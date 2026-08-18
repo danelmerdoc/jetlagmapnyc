@@ -318,10 +318,13 @@
 
   function snapAirportIcons() {
     if (!map) return;
-    Geo().snapAirportsToMapbox(Game().AIRPORTS, window.MAPBOX_TOKEN)
-      .then((airports) => {
-        if (airports) Game().airportsMoved();
-      })
+    const result = Geo().snapAirportsFromMap(Game().AIRPORTS, map) || {};
+    const snapped = new Set(result.snappedIds || []);
+    if (result.moved) Game().airportsMoved();
+    const missing = Game().AIRPORTS.filter(a => !snapped.has(a.id));
+    if (!missing.length) return;
+    Geo().snapAirportsToMapbox(missing, window.MAPBOX_TOKEN)
+      .then(() => Game().airportsMoved())
       .catch(() => {});
   }
 
