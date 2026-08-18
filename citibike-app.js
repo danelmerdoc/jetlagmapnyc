@@ -10,6 +10,7 @@
   let theme = 'light';
   let zoneMode = 'overlap';
   let showTransit = false;
+  let show3D = false;
   let focusStation = null;
   let clickBound = false;
   let layersReady = false;
@@ -83,6 +84,8 @@
     ['cb-focus-outside-fill', 'cb-focus-fill', 'cb-focus-line'].forEach(id => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', foc);
     });
+    const elimVis = !focusStation && Game().getQuestions().some(q => q.answer != null) ? 'visible' : 'none';
+    if (map.getLayer('cb-elim-fill')) map.setLayoutProperty('cb-elim-fill', 'visibility', elimVis);
   }
 
   function markerEl(label, color) {
@@ -143,6 +146,9 @@
     if (map.getSource('cb-questions')) map.getSource('cb-questions').setData(Game().questionsGeoJSON());
     if (map.getSource('cb-focus')) map.getSource('cb-focus').setData(focusGeoJSON());
     if (map.getSource('cb-focus-outside')) map.getSource('cb-focus-outside').setData(focusOutsideMask());
+    if (map.getSource('cb-elim')) {
+      map.getSource('cb-elim').setData(focusStation ? { type: 'FeatureCollection', features: [] } : Game().eliminatedMask());
+    }
     syncZoneVisibility();
     scheduleMergedUpdate();
     syncMarkers();
@@ -226,6 +232,28 @@
     }
   }
 
+  function add3DBuildings() {
+    if (!map.getSource('composite') || map.getLayer('cb-3d-buildings')) return;
+    const labelLayer = map.getStyle().layers.find(l => l.type === 'symbol')?.id;
+    try {
+      map.addLayer({
+        id: 'cb-3d-buildings',
+        source: 'composite',
+        'source-layer': 'building',
+        filter: ['>', ['coalesce', ['get', 'height'], 0], 0],
+        type: 'fill-extrusion',
+        minzoom: 14,
+        layout: { visibility: show3D ? 'visible' : 'none' },
+        paint: {
+          'fill-extrusion-color': theme === 'dark' ? '#3b4554' : '#d4cfc6',
+          'fill-extrusion-height': ['coalesce', ['get', 'height'], 0],
+          'fill-extrusion-base': ['coalesce', ['get', 'min_height'], 0],
+          'fill-extrusion-opacity': 0.72,
+        },
+      }, labelLayer);
+    } catch (_) { /* style without buildings */ }
+  }
+
   function addTransitLayer() {
     if (map.getSource('tf-transport')) return;
     map.addSource('tf-transport', {
@@ -265,7 +293,17 @@
     if (!map.getSource('cb-questions')) {
       map.addSource('cb-questions', { type: 'geojson', data: Game().questionsGeoJSON() });
     }
+    if (!map.getSource('cb-elim')) {
+      map.addSource('cb-elim', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    }
 
+    if (!map.getLayer('cb-elim-fill')) {
+      map.addLayer({
+        id: 'cb-elim-fill', type: 'fill', source: 'cb-elim',
+        layout: { visibility: 'none' },
+        paint: { 'fill-color': elimColor, 'fill-opacity': theme === 'dark' ? 0.5 : 0.42 },
+      });
+    }
     if (!map.getLayer('cb-zones-overlap')) {
       map.addLayer({
         id: 'cb-zones-overlap', type: 'circle', source: 'cb-stations',
@@ -367,6 +405,7 @@
     }
 
     layersReady = true;
+    add3DBuildings();
     refreshMap();
   }
 
@@ -468,6 +507,14 @@
       }
     });
 
+    document.getElementById('cb-toggle-3d')?.addEventListener('change', e => {
+      show3D = e.target.checked;
+      if (map?.getLayer('cb-3d-buildings')) {
+        map.setLayoutProperty('cb-3d-buildings', 'visibility', show3D ? 'visible' : 'none');
+      }
+      map?.easeTo({ pitch: show3D ? 55 : 0, duration: 600 });
+    });
+
     document.getElementById('cb-live-endgame')?.addEventListener('change', e => {
       if (e.target.checked) startLiveEndgame();
       else stopLiveEndgame();
@@ -529,7 +576,7 @@
       attributionControl: true,
       antialias: true,
     });
-    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: false }), 'top-right');
+    map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), 'top-right');
     map.addControl(new mapboxgl.GeolocateControl({
       positionOptions: { enableHighAccuracy: true },
       trackUserLocation: true,

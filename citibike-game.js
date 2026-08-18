@@ -217,6 +217,42 @@
     return { type: 'FeatureCollection', features };
   }
 
+  function possibleAreaFromQuestions() {
+    const qs = questions.filter(q => q.answer != null);
+    if (!qs.length) return null;
+    let area = Geo().WORLD;
+    for (const q of qs) {
+      if (q.type === 'radius' && q.lat != null && q.lng != null) {
+        const r = radiusMiles(q);
+        if (q.answer === 'within') {
+          const c = turf.circle([q.lng, q.lat], r + hideRadiusMi, { steps: 96, units: 'miles' });
+          area = Geo().modifyMapData(area, c, true);
+        } else {
+          const inner = r - hideRadiusMi;
+          if (inner > 0.001) {
+            const c = turf.circle([q.lng, q.lat], inner, { steps: 96, units: 'miles' });
+            area = Geo().modifyMapData(area, c, false);
+          }
+        }
+      } else if (q.type === 'thermometer' && q.latA != null && q.latB != null) {
+        area = Geo().modifyMapData(area, Geo().thermometerRegion(q, q.answer === 'warmer'), true);
+      } else if (q.type === 'borough') {
+        const poly = boroughPolys[q.borough];
+        if (poly) area = Geo().modifyMapData(area, poly, q.answer === 'same');
+      } else if (q.type === 'airport' && q.lat != null) {
+        const cell = Geo().voronoiCellContaining({ lng: q.lng, lat: q.lat }, AIRPORTS);
+        if (cell) area = Geo().modifyMapData(area, cell, q.answer === 'same');
+      }
+    }
+    return area;
+  }
+
+  function eliminatedMask() {
+    const possible = possibleAreaFromQuestions();
+    if (!possible) return { type: 'FeatureCollection', features: [] };
+    return Geo().holedMask(possible);
+  }
+
   function questionsGeoJSON() {
     const features = [];
     for (const q of questions) {
@@ -501,7 +537,7 @@
   window.JetLagCitibikeGame = {
     parseCoord, fmtCoord, bindUI, renderList, initStationData,
     getActiveStations, activeStationFeatures, mergedZonesGeoJSON,
-    questionsGeoJSON, stationCircle, setQuestionPoint, distMi,
+    questionsGeoJSON, eliminatedMask, stationCircle, setQuestionPoint, distMi,
     getQuestions: () => questions,
     get hideRadiusMi() { return hideRadiusMi; },
     get stations() { return stations; },
