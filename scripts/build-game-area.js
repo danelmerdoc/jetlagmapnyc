@@ -51,7 +51,8 @@ function hudsonStrip(manhattan, nj) {
 
 /** Water zones where the outer ring is replaced by straight chords. */
 function inHarbor(lng, lat) {
-  return lat < 40.60 && lng > -74.18 && lng < -73.68;
+  // The Narrows / Lower Bay west of Bay Ridge — keep Sea Gate, Coney Island, Rockaways.
+  return lat < 40.68 && lat > 40.60 && lng > -74.12 && lng < -74.05;
 }
 
 function inUpperHudson(lng, lat) {
@@ -187,6 +188,10 @@ async function nominatim(query, cacheFile) {
     ['Mount Vernon', -73.837, 40.912, true],
     ['Staten Island', -74.15, 40.58, true],
     ['Newark', -74.172, 40.736, true],
+    ['Sea Gate', -74.007, 40.577, false],
+    ['Coney Island', -73.981, 40.575, false],
+    ['Rockaway Beach', -73.822, 40.585, false],
+    ['Breezy Point', -73.926, 40.556, false],
   ];
 
   console.log('\nplayable shell', shellRing.length, 'pts',
