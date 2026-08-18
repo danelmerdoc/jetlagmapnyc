@@ -62,14 +62,12 @@
     if (!map) return;
     const set = (id, prop, val) => { if (map.getLayer(id)) map.setPaintProperty(id, prop, val); };
     const mergedOpacity = zones.fillOpacity + (theme === 'dark' ? 0.12 : 0.06);
-    set('cb-zones-halo', 'circle-color', zones.haloFill);
-    set('cb-zones-halo', 'circle-opacity', zones.haloOpacity);
-    set('cb-zones-overlap', 'circle-color', zones.fill);
-    set('cb-zones-overlap', 'circle-opacity', zones.fillOpacity);
-    set('cb-zones-overlap', 'circle-stroke-color', zones.stroke);
-    set('cb-zones-overlap', 'circle-stroke-opacity', zones.strokeOpacity);
-    set('cb-zones-overlap', 'circle-stroke-width', zones.strokeWidth);
-    set('cb-zones-overlap', 'circle-emissive-strength', zones.emissive);
+    set('cb-zones-overlap-fill', 'fill-color', zones.fill);
+    set('cb-zones-overlap-fill', 'fill-opacity', zones.fillOpacity);
+    set('cb-zones-overlap-fill', 'fill-emissive-strength', zones.emissive);
+    set('cb-zones-overlap-line', 'line-color', zones.stroke);
+    set('cb-zones-overlap-line', 'line-opacity', zones.strokeOpacity);
+    set('cb-zones-overlap-line', 'line-width', zones.strokeWidth);
     set('cb-merged-fill', 'fill-color', zones.fill);
     set('cb-merged-fill', 'fill-opacity', mergedOpacity);
     set('cb-merged-fill', 'fill-emissive-strength', zones.emissive);
@@ -113,6 +111,11 @@
     };
   }
 
+  function overlapZonesGeoJSON() {
+    if (focusStation) return { type: 'FeatureCollection', features: [] };
+    return Game().overlapZonesGeoJSON(Game().getActiveStations());
+  }
+
   function focusGeoJSON() {
     if (!focusStation) return { type: 'FeatureCollection', features: [] };
     const circle = Game().stationCircle(focusStation);
@@ -147,7 +150,8 @@
     if (!map) return;
     const overlap = zoneMode === 'overlap' && !focusStation ? 'visible' : 'none';
     const merged = zoneMode === 'merged' && !focusStation ? 'visible' : 'none';
-    if (map.getLayer('cb-zones-overlap')) map.setLayoutProperty('cb-zones-overlap', 'visibility', overlap);
+    if (map.getLayer('cb-zones-overlap-fill')) map.setLayoutProperty('cb-zones-overlap-fill', 'visibility', overlap);
+    if (map.getLayer('cb-zones-overlap-line')) map.setLayoutProperty('cb-zones-overlap-line', 'visibility', overlap);
     ['cb-merged-fill', 'cb-merged-line'].forEach(id => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', merged);
     });
@@ -224,6 +228,7 @@
   function refreshMap() {
     if (!map || !layersReady) return;
     if (map.getSource('cb-stations')) map.getSource('cb-stations').setData(stationFeaturesGeoJSON());
+    if (map.getSource('cb-zones-overlap')) map.getSource('cb-zones-overlap').setData(overlapZonesGeoJSON());
     if (map.getSource('cb-questions')) map.getSource('cb-questions').setData(Game().questionsGeoJSON());
     if (map.getSource('cb-focus')) map.getSource('cb-focus').setData(focusGeoJSON());
     if (map.getSource('cb-focus-outside')) map.getSource('cb-focus-outside').setData(focusOutsideMask());
@@ -377,6 +382,9 @@
     if (!map.getSource('cb-stations')) {
       map.addSource('cb-stations', { type: 'geojson', data: stationFeaturesGeoJSON() });
     }
+    if (!map.getSource('cb-zones-overlap')) {
+      map.addSource('cb-zones-overlap', { type: 'geojson', data: overlapZonesGeoJSON() });
+    }
     if (!map.getSource('cb-merged')) {
       map.addSource('cb-merged', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     }
@@ -414,30 +422,21 @@
         },
       });
     }
-    if (!map.getLayer('cb-zones-halo')) {
+    if (!map.getLayer('cb-zones-overlap-fill')) {
       addLayer({
-        id: 'cb-zones-halo', type: 'circle', source: 'cb-stations',
+        id: 'cb-zones-overlap-fill', type: 'fill', source: 'cb-zones-overlap',
         paint: {
-          'circle-radius': ['*', ['interpolate', ['exponential', 2], ['zoom'], 0, 0, 20, ['get', 'r20']], 1.14],
-          'circle-color': zones.haloFill,
-          'circle-opacity': zones.haloOpacity,
-          'circle-blur': 0.35,
-          'circle-pitch-alignment': 'map',
+          'fill-color': zones.fill,
+          'fill-opacity': zones.fillOpacity,
+          'fill-emissive-strength': zones.emissive,
         },
       });
-    }
-    if (!map.getLayer('cb-zones-overlap')) {
       addLayer({
-        id: 'cb-zones-overlap', type: 'circle', source: 'cb-stations',
+        id: 'cb-zones-overlap-line', type: 'line', source: 'cb-zones-overlap',
         paint: {
-          'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 0, 0, 20, ['get', 'r20']],
-          'circle-color': zones.fill,
-          'circle-opacity': zones.fillOpacity,
-          'circle-stroke-color': zones.stroke,
-          'circle-stroke-opacity': zones.strokeOpacity,
-          'circle-stroke-width': zones.strokeWidth,
-          'circle-emissive-strength': zones.emissive,
-          'circle-pitch-alignment': 'map',
+          'line-color': zones.stroke,
+          'line-width': zones.strokeWidth,
+          'line-opacity': zones.strokeOpacity,
         },
       });
     }

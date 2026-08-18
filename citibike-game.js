@@ -249,18 +249,26 @@
   }
 
   function activeStationFeatures(activeSet) {
-    const meters = hideRadiusMi * 1609.344;
-    const mPerPxZ20 = 40075016.686 / (256 * 2 ** 20);
     return activeSet.map(st => ({
       type: 'Feature',
       properties: {
         id: st.id,
         name: st.name,
         borough: st.borough,
-        r20: (meters / mPerPxZ20) * Math.cos(st.lat * Math.PI / 180),
       },
       geometry: { type: 'Point', coordinates: [st.lng, st.lat] },
     }));
+  }
+
+  function overlapZonesGeoJSON(activeSet) {
+    return {
+      type: 'FeatureCollection',
+      features: activeSet.map(st => {
+        const c = turf.circle([st.lng, st.lat], hideRadiusMi, { steps: 32, units: 'miles' });
+        c.properties = { id: st.id, name: st.name };
+        return c;
+      }),
+    };
   }
 
   function mergedZonesGeoJSON(activeStations, bbox) {
@@ -770,7 +778,7 @@
 
   window.JetLagCitibikeGame = {
     parseCoord, fmtCoord, bindUI, renderList, initStationData,
-    getActiveStations, activeStationFeatures, mergedZonesGeoJSON,
+    getActiveStations, activeStationFeatures, overlapZonesGeoJSON, mergedZonesGeoJSON,
     questionsGeoJSON, eliminatedMask, possibleAreaGeoJSON, stationCircle, setQuestionPoint,
     ensureQuestionCoords, distMi,
     getQuestions: () => questions,
