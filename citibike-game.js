@@ -40,7 +40,6 @@
   let coastSimple = null;
   let coastMask = null;
   let gameArea = null;
-  let greyOverlay = { type: 'FeatureCollection', features: [] };
   let playableOutline = { type: 'FeatureCollection', features: [] };
   let onChange = null;
 
@@ -845,9 +844,9 @@
     return area;
   }
 
-  /** Precomputed grey fill — no runtime geometry. */
+  /** Grey overlay disabled. */
   function eliminatedMask() {
-    return greyOverlay;
+    return EMPTY_FC;
   }
 
   /** Precomputed blue outline — no runtime geometry. */
@@ -1281,11 +1280,10 @@
   }
 
   async function initStationData(geojson) {
-    const [boro, coast, area, grey, border] = await Promise.all([
+    const [boro, coast, area, border] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
       fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
       fetch('data/game_area.geojson?v=7').then(r => r.json()).catch(() => null),
-      fetch('data/grey.geojson?v=7').then(r => r.json()).catch(() => null),
       fetch('data/playable_border.geojson?v=7').then(r => r.json()).catch(() => null),
       Geo().snapAirportsViaTilequery(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
@@ -1299,7 +1297,6 @@
     }
     clearBoroughCaches();
     gameArea = area?.features?.[0] || null;
-    greyOverlay = grey || EMPTY_FC;
     playableOutline = border || EMPTY_FC;
     areaCache = { key: null, area: null };
     activeCache = { key: null, list: null };
