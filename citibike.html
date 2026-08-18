@@ -168,6 +168,12 @@
     <button type="button" class="panel-toggle" id="panel-toggle" aria-label="Toggle sidebar">−</button>
   </div>
   <div class="panel-body">
+    <div class="timer-row">
+      <span id="cb-timer" class="timer-readout">00:00</span>
+      <button type="button" class="game-btn small" id="cb-timer-start">Start</button>
+      <button type="button" class="game-btn small secondary" id="cb-timer-pause">Pause</button>
+      <button type="button" class="game-btn small secondary" id="cb-timer-reset">Reset</button>
+    </div>
     <p class="status" id="cb-status">Loading map…</p>
     <p class="sub" id="cb-focus-info">Tap a station to isolate its hide circle. Double-tap outside that circle to unselect.</p>
 
@@ -201,13 +207,6 @@
       <button type="button" class="game-btn small secondary" id="cb-clear-focus">Unselect station</button>
     </div>
 
-    <div class="section">Stopwatch</div>
-    <div class="timer-row">
-      <span id="cb-timer" class="timer-readout">00:00</span>
-      <button type="button" class="game-btn small" id="cb-timer-start">Start</button>
-      <button type="button" class="game-btn small secondary" id="cb-timer-pause">Pause</button>
-      <button type="button" class="game-btn small secondary" id="cb-timer-reset">Reset</button>
-    </div>
 
     <div class="section">Questions</div>
     <p class="sub">Open a question to place pins on the map. Paste coords (decimal or DMS), drag pins, or use live location. Stations are removed only when their entire hide zone is ruled out.</p>
@@ -240,7 +239,7 @@
 </div>
 <script src="config.js"></script>
 <script src="geo-utils.js?v=8"></script>
-<script src="citibike-game.js?v=14"></script>
-<script src="citibike-app.js?v=12"></script>
+<script src="citibike-game.js?v=15"></script>
+<script src="citibike-app.js?v=13"></script>
 </body>
 </html>
