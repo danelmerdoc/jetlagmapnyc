@@ -2,7 +2,7 @@
 (function () {
   const Geo = () => window.JetLagGeo;
   const COLORS = ['#7c4dff', '#2563eb', '#0d9488', '#db2777', '#ea580c', '#4f46e5'];
-  const STORAGE_KEY = 'jetlagCitibikeQuestionsV3';
+  const STORAGE_KEY = 'jetlagCitibikeQuestionsV5';
   const BOROUGHS = ['Manhattan', 'Bronx', 'Brooklyn', 'Queens', 'Staten Island', 'Jersey'];
   const AIRPORTS = [
     { id: 'skyports', code: '6N7', name: 'NY Skyports Seaplane Base', lat: 40.7351534, lng: -73.9729007 },
@@ -18,7 +18,21 @@
   let coastFeature = null;
   let coastSimple = null;
   let coastMask = null;
+  let gameArea = null;
   let onChange = null;
+
+  /**
+   * Questions were briefly saved as "matching"/"measuring" with a subtype. Those
+   * rows would render as an empty card here, so fold them back onto the type they
+   * were built from and drop any that have no equivalent.
+   */
+  function migrateQuestion(q) {
+    if (q.type === 'matching') q.type = q.subtype === 'airport' ? 'airport' : 'borough';
+    else if (q.type === 'measuring') q.type = q.subtype === 'coastline' ? 'coastline' : null;
+    delete q.subtype;
+    if (q.type === 'borough' && !q.borough) q.borough = 'Manhattan';
+    return q.type != null;
+  }
 
   function nextColor() {
     const c = COLORS[colorIdx % COLORS.length];
@@ -28,9 +42,12 @@
 
   function load() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(STORAGE_KEY)
+        || localStorage.getItem('jetlagCitibikeQuestionsV4')
+        || localStorage.getItem('jetlagCitibikeQuestionsV3');
       if (raw) questions = JSON.parse(raw);
     } catch (_) { questions = []; }
+    questions = questions.filter(migrateQuestion);
     questions.forEach(q => {
       if (q.open == null) q.open = false;
       if (q.type === 'thermometer') {
@@ -215,6 +232,10 @@
   function boroughLand(name) {
     if (boroughLandCache[name] !== undefined) return boroughLandCache[name];
     const poly = boroughPolys[name] || null;
+    // A saved question can ask for a borough before the outline file has arrived.
+    // Caching the miss would leave every station filed under Jersey for the rest
+    // of the session, so wait and answer again once the data is in.
+    if (!poly) return null;
     let land = poly;
     if (poly && poly.geometry.type === 'MultiPolygon') {
       const parts = poly.geometry.coordinates;
@@ -248,19 +269,20 @@
     if (name !== 'Jersey') {
       if (boroughMaskCache[name] !== undefined) return boroughMaskCache[name];
       const land = boroughLand(name);
+      if (!land) return null;
       let mask = land;
-      if (land) {
-        try {
-          mask = turf.simplify(land, { tolerance: 0.00005, highQuality: false });
-        } catch (_) { mask = land; }
-      }
+      try {
+        mask = turf.simplify(land, { tolerance: 0.00005, highQuality: false });
+      } catch (_) { mask = land; }
       boroughMaskCache[name] = mask;
       return mask;
     }
     if (jerseyPoly) return jerseyPoly;
     const njBox = turf.bboxPolygon(NJ_BOX);
-    const lands = BOROUGHS.filter(b => b !== 'Jersey').map(b => boroughLand(b)).filter(Boolean);
-    if (!lands.length) return njBox;
+    const nycNames = BOROUGHS.filter(b => b !== 'Jersey');
+    const lands = nycNames.map(b => boroughLand(b)).filter(Boolean);
+    // Subtracting only some of the city would hand its missing half to Jersey.
+    if (lands.length < nycNames.length) return njBox;
     try {
       const coarse = lands.map(p => {
         try { return turf.simplify(p, { tolerance: 0.001, highQuality: false }); } catch (_) { return p; }
@@ -278,12 +300,9 @@
 
   function boroughIndex(name) {
     if (boroughIndexCache[name] !== undefined) return boroughIndexCache[name];
-    let rings;
-    if (name === 'Jersey') {
-      rings = simplifiedRings(boroughPoly('Jersey'), 0.00005);
-    } else {
-      rings = simplifiedRings(boroughLand(name), 0.00005);
-    }
+    const poly = name === 'Jersey' ? boroughPoly('Jersey') : boroughLand(name);
+    if (!poly) return null;
+    const rings = simplifiedRings(poly, 0.00005);
     const index = rings.length ? Geo().buildSegmentIndex(rings, 0.02) : null;
     boroughIndexCache[name] = index;
     return index;
@@ -312,8 +331,16 @@
   function landExcept(name) {
     if (otherLandCache[name] !== undefined) return otherLandCache[name];
     const parts = BOROUGHS.filter(b => b !== name).map(b => boroughPoly(b)).filter(Boolean);
-    otherLandCache[name] = parts.length ? Geo().unionMany(parts) : null;
+    if (parts.length < BOROUGHS.length - 1) return null;
+    otherLandCache[name] = Geo().unionMany(parts);
     return otherLandCache[name];
+  }
+
+  /** Drop everything derived from the borough outlines, e.g. once they load. */
+  function clearBoroughCaches() {
+    [boroughLandCache, boroughMaskCache, boroughIndexCache, boroughEdgeCache, otherLandCache]
+      .forEach(cache => { for (const k of Object.keys(cache)) delete cache[k]; });
+    jerseyPoly = null;
   }
 
   /**
@@ -573,7 +600,7 @@
 
   function possibleAreaFromQuestions() {
     const qs = questions.filter(q => q.answer != null);
-    if (!qs.length) return null;
+    if (!qs.length) return gameArea;
 
     const key = answeredKey();
     if (areaCache.key === key) return areaCache.area;
@@ -602,6 +629,10 @@
         if (band) area = Geo().modifyMapData(area, band, q.answer === 'closer');
       }
     }
+
+    // Nothing outside the boroughs is ever in play, so clip once at the end. The
+    // per-question steps stay on the cheap WORLD fast path until then.
+    if (gameArea) area = Geo().intersect(area, gameArea) || area;
 
     areaCache = { key, area };
     return area;
@@ -1025,9 +1056,10 @@
   }
 
   async function initStationData(geojson) {
-    const [boro, coast] = await Promise.all([
+    const [boro, coast, area] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
       fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
+      fetch('data/game_area.geojson').then(r => r.json()).catch(() => null),
       Geo().snapAirportsToMapbox(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
     airportBisectors.clear();
@@ -1038,6 +1070,11 @@
     } catch (e) {
       console.warn('borough load failed', e);
     }
+    clearBoroughCaches();
+    gameArea = area?.features?.[0] || null;
+    areaCache = { key: null, area: null };
+    maskCache = { key: null, mask: null, border: null };
+    activeCache = { key: null, list: null };
     try {
       coastFeature = coast?.features?.[0] || null;
       coastIndex = null;
@@ -1063,6 +1100,10 @@
       try { hit = turf.simplify(poly, { tolerance: 0.0002, highQuality: false }); } catch (_) { hit = poly; }
       return { name, poly: hit, box: poly ? turf.bbox(poly) : [0, 0, 0, 0] };
     }).filter(b => b.poly);
+    if (boroBoxes.length < BOROUGHS.length - 1) {
+      console.warn('borough outlines missing, station boroughs will be wrong:',
+        boroBoxes.map(b => b.name).join(', ') || 'none loaded');
+    }
 
     stations = (geojson.features || []).map((f, i) => {
       const [lng, lat] = f.geometry.coordinates;

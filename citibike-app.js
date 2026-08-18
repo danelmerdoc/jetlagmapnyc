@@ -175,7 +175,7 @@
     ['cb-focus-outside-fill', 'cb-focus-fill', 'cb-focus-line'].forEach(id => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', foc);
     });
-    const elimVis = !focusStation && Game().getQuestions().some(q => q.answer != null) ? 'visible' : 'none';
+    const elimVis = focusStation ? 'none' : 'visible';
     if (map.getLayer('cb-elim-fill')) map.setLayoutProperty('cb-elim-fill', 'visibility', elimVis);
     if (map.getLayer('cb-possible-border')) map.setLayoutProperty('cb-possible-border', 'visibility', elimVis);
   }
