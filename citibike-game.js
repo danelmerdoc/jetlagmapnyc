@@ -40,6 +40,8 @@
   let coastSimple = null;
   let coastMask = null;
   let gameArea = null;
+  let playablePoly = null;
+  let greyStatic = { type: 'FeatureCollection', features: [] };
   let playableOutline = { type: 'FeatureCollection', features: [] };
   let onChange = null;
 
@@ -789,15 +791,20 @@
   }
 
   let areaCache = { key: null, area: null };
+  let overlayCache = { key: null, mask: null, border: null };
+
+  function playableStart() {
+    return playablePoly || gameArea || Geo().WORLD;
+  }
 
   function possibleAreaFromQuestions() {
     const qs = questions.filter(q => q.answer != null);
-    if (!qs.length) return gameArea;
+    if (!qs.length) return playableStart();
 
     const key = answeredKey();
     if (areaCache.key === key) return areaCache.area;
 
-    let area = Geo().WORLD;
+    let area = playableStart();
     for (const q of qs) {
       if (q.type === 'radius' && q.lat != null && q.lng != null) {
         const r = radiusMiles(q);
@@ -838,20 +845,114 @@
       }
     }
 
-    if (gameArea) area = Geo().intersect(area, gameArea) || area;
-
     areaCache = { key, area };
     return area;
   }
 
-  /** Grey overlay disabled. */
-  function eliminatedMask() {
-    return EMPTY_FC;
+  function geomCoordCount(geom) {
+    if (!geom) return 0;
+    let n = 0;
+    const walk = (c) => {
+      if (!Array.isArray(c) || !c.length) return;
+      if (typeof c[0] === 'number') { n += 1; return; }
+      for (const x of c) walk(x);
+    };
+    walk(geom.coordinates);
+    return n;
   }
 
-  /** Precomputed blue outline — no runtime geometry. */
+  function simplifyForDisplay(feat) {
+    const poly = Geo().safePoly(feat);
+    if (!poly) return null;
+    if (geomCoordCount(poly.geometry) <= 1500) return poly;
+    try {
+      return Geo().safePoly(turf.simplify(poly, { tolerance: 0.0004, highQuality: false })) || poly;
+    } catch (_) {
+      return poly;
+    }
+  }
+
+  function emptyGeom(feat) {
+    const poly = Geo().safePoly(feat);
+    if (!poly) return true;
+    const g = poly.geometry;
+    if (g.type === 'Polygon') return !g.coordinates[0] || g.coordinates[0].length < 4;
+    return !g.coordinates.some(p => p[0] && p[0].length >= 4);
+  }
+
+  function splitRings(feat) {
+    const poly = Geo().safePoly(feat);
+    const outers = [];
+    const holes = [];
+    if (!poly) return { outers, holes };
+    const parts = poly.geometry.type === 'Polygon'
+      ? [poly.geometry.coordinates]
+      : poly.geometry.coordinates;
+    for (const rings of parts) {
+      if (rings?.[0]?.length >= 4) outers.push(rings[0]);
+      for (let i = 1; i < rings.length; i++) {
+        if (rings[i]?.length >= 4) holes.push(rings[i]);
+      }
+    }
+    return { outers, holes };
+  }
+
+  /**
+   * Grey = metro frame minus remaining possible area. Interior holes of the
+   * remaining polygon (e.g. a radar "outside" circle) are filled as extra
+   * polygons so Mapbox greys them without tracing those rings as the blue border.
+   */
+  function overlayFromRemaining(remaining) {
+    const display = simplifyForDisplay(remaining);
+    if (emptyGeom(display)) {
+      return {
+        mask: { type: 'FeatureCollection', features: [Geo().MASK_FRAME] },
+        border: EMPTY_FC,
+      };
+    }
+    const { outers, holes } = splitRings(display);
+    const cutout = outers.length === 1
+      ? turf.polygon([outers[0]])
+      : turf.multiPolygon(outers.map(r => [r]));
+    const features = [];
+    try {
+      const grey = turf.mask(cutout, Geo().MASK_FRAME);
+      if (grey) features.push(grey);
+    } catch (_) { /* fall through */ }
+    for (const hole of holes) {
+      try { features.push(turf.polygon([hole])); } catch (_) { /* skip */ }
+    }
+    return {
+      mask: features.length ? { type: 'FeatureCollection', features } : (greyStatic || EMPTY_FC),
+      border: {
+        type: 'FeatureCollection',
+        features: outers.map(r => turf.lineString(r)),
+      },
+    };
+  }
+
+  function overlayForState() {
+    const key = answeredKey();
+    if (overlayCache.key === key && overlayCache.mask) return overlayCache;
+    const qs = questions.filter(q => q.answer != null);
+    if (!qs.length) {
+      overlayCache = {
+        key,
+        mask: greyStatic || EMPTY_FC,
+        border: playableOutline,
+      };
+      return overlayCache;
+    }
+    overlayCache = { key, ...overlayFromRemaining(possibleAreaFromQuestions()) };
+    return overlayCache;
+  }
+
+  function eliminatedMask() {
+    return overlayForState().mask;
+  }
+
   function possibleAreaGeoJSON() {
-    return playableOutline;
+    return overlayForState().border;
   }
 
   function questionsGeoJSON() {
@@ -1276,14 +1377,17 @@
     airportBisectors.clear();
     activeCache = { key: null, list: null };
     areaCache = { key: null, area: null };
+    overlayCache = { key: null, mask: null, border: null };
     notifyChange();
   }
 
   async function initStationData(geojson) {
-    const [boro, coast, area, border] = await Promise.all([
+    const [boro, coast, area, playable, grey, border] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
       fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
       fetch('data/game_area.geojson?v=8').then(r => r.json()).catch(() => null),
+      fetch('data/playable.geojson?v=8').then(r => r.json()).catch(() => null),
+      fetch('data/grey.geojson?v=8').then(r => r.json()).catch(() => null),
       fetch('data/playable_border.geojson?v=8').then(r => r.json()).catch(() => null),
       Geo().snapAirportsToMapbox(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
@@ -1297,8 +1401,17 @@
     }
     clearBoroughCaches();
     gameArea = area?.features?.[0] || null;
+    playablePoly = playable?.features?.[0] || gameArea;
+    greyStatic = grey || EMPTY_FC;
+    if ((!greyStatic.features || !greyStatic.features.length) && playablePoly) {
+      try {
+        const g = turf.mask(playablePoly, Geo().MASK_FRAME);
+        greyStatic = g ? { type: 'FeatureCollection', features: [g] } : EMPTY_FC;
+      } catch (_) { greyStatic = EMPTY_FC; }
+    }
     playableOutline = border || EMPTY_FC;
     areaCache = { key: null, area: null };
+    overlayCache = { key: null, mask: null, border: null };
     activeCache = { key: null, list: null };
     try {
       coastFeature = coast?.features?.[0] || null;
