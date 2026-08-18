@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Citi Bike Hide + Seek — Jet Lag NYC</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#003DA5" />
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.css" rel="stylesheet" />
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
+<style>
+  :root { --panel: rgba(255,248,236,.96); --text:#2a2418; --border:#e8c878; --accent:#ffb020; --bike:#003DA5; }
+  body.dark { --panel: rgba(20,24,32,.94); --text:#f5f0e6; --border:#ffb020; --accent:#ffc848; }
+  html,body { margin:0; height:100%; font-family:-apple-system,Helvetica Neue,Helvetica,Arial,sans-serif; touch-action:manipulation; }
+  #map { position:absolute; inset:0; }
+  .panel {
+    position:absolute; top:12px; left:12px; z-index:2; background:var(--panel); color:var(--text);
+    border:2px solid var(--border); border-radius:12px; padding:0;
+    box-shadow:0 6px 24px rgba(0,0,0,.2); backdrop-filter:blur(8px);
+    width:min(340px, calc(100vw - 24px)); max-height:calc(100vh - 24px);
+    overflow:hidden; display:flex; flex-direction:column;
+  }
+  .panel-head {
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:10px 14px; border-bottom:1px solid var(--border); cursor:pointer; user-select:none;
+  }
+  .panel-head h1 { font-size:14px; margin:0; letter-spacing:.04em; text-transform:uppercase; }
+  .panel-toggle { border:none; background:transparent; color:var(--text); font-size:18px; line-height:1; padding:4px 6px; cursor:pointer; }
+  .panel.collapsed .panel-body { display:none; }
+  .panel.collapsed .panel-head { border-bottom:none; }
+  .panel-body { padding:12px 14px; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  .sub { font-size:11px; opacity:.75; margin:0 0 10px; line-height:1.35; }
+  .status { font-size:12px; font-weight:600; color:var(--bike); margin:0 0 8px; }
+  body.dark .status { color:var(--accent); }
+  .seg { display:flex; gap:6px; margin:4px 0 10px; flex-wrap:wrap; }
+  .seg button {
+    flex:1; min-width:70px; font-size:12px; padding:8px 0; border:1px solid var(--border); background:transparent;
+    color:var(--text); border-radius:8px; cursor:pointer;
+  }
+  .seg button.active { background:var(--accent); color:#1a1408; border-color:var(--accent); font-weight:600; }
+  .row { display:flex; align-items:center; gap:8px; font-size:13px; padding:6px 0; cursor:pointer; min-height:32px; }
+  .row input { accent-color:var(--accent); width:18px; height:18px; flex:0 0 auto; }
+  hr { border:none; border-top:1px solid var(--border); margin:10px 0; }
+  label { font-size:12px; font-weight:600; display:block; margin:8px 0 4px; }
+  .game-field input, .game-field select, .game-field textarea,
+  .hide-station-field input, .game-row input, .game-row select {
+    font-size:16px; padding:8px 10px; border:1px solid var(--border); border-radius:8px;
+    background:transparent; color:var(--text); box-sizing:border-box; width:100%;
+  }
+  .game-row { display:flex; gap:6px; align-items:center; }
+  .game-row input[type="range"] { flex:1; accent-color:var(--accent); }
+  .game-row input, .game-row select { width:auto; flex:1; }
+  .game-btn {
+    font-size:13px; padding:10px 12px; border:1px solid var(--border); border-radius:8px;
+    background:var(--accent); color:#1a1408; font-weight:600; cursor:pointer; width:100%; margin-top:4px;
+  }
+  .game-btn.secondary { background:transparent; color:var(--text); font-weight:500; }
+  .game-btn.small { width:auto; padding:8px 10px; font-size:12px; margin-top:0; }
+  .hide-actions { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
+  .game-hint { font-size:11px; opacity:.8; margin:6px 0 0; line-height:1.35; }
+  .game-item { border:1px solid var(--border); border-radius:8px; padding:8px; margin:6px 0; font-size:12px; }
+  .game-item-head { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+  .game-dot { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
+  .game-rm { margin-left:auto; border:none; background:transparent; color:var(--text); cursor:pointer; font-size:20px; line-height:1; padding:4px; }
+  .nav-link { font-size:12px; color:var(--text); opacity:.8; }
+  .mapboxgl-popup-content { font-size:13px; font-weight:600; padding:8px 12px; border-radius:8px; max-width:240px; }
+  .mapboxgl-ctrl-top-right { top:12px; right:12px; }
+  @media (max-width: 768px) {
+    .panel { top:8px; left:8px; right:8px; width:auto; max-height:calc(100dvh - 16px); }
+    .mapboxgl-ctrl-top-right { top:auto; bottom:12px; right:8px; }
+    .mapboxgl-ctrl-group button { width:36px; height:36px; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel" class="panel">
+  <div class="panel-head" id="panel-head">
+    <h1>Citi Bike Hide + Seek</h1>
+    <button type="button" class="panel-toggle" id="panel-toggle" aria-label="Toggle sidebar">−</button>
+  </div>
+  <div class="panel-body">
+    <p class="status" id="cb-status">Loading map…</p>
+    <p class="sub" id="cb-focus-info">Tap a station pin to focus its hide zone.</p>
+    <p class="sub"><a class="nav-link" href="index.html">← Transit hide + seek map</a></p>
+
+    <div class="seg" id="cb-theme">
+      <button type="button" data-style="light" class="active">Light</button>
+      <button type="button" data-style="dark">Dark</button>
+    </div>
+
+    <label>Hide radius</label>
+    <div class="game-row">
+      <input id="cb-hide-radius" type="range" min="0.05" max="0.5" step="0.01" value="0.20" />
+      <span id="cb-hide-radius-label" style="font-size:12px;font-weight:600;min-width:52px">0.20 mi</span>
+    </div>
+    <label class="row"><input type="checkbox" id="cb-toggle-zones" checked /> Show merged hide zones</label>
+
+    <div class="hide-station-field">
+      <input type="text" id="cb-station-search" list="cb-station-list" placeholder="Find station…" autocomplete="off" />
+      <datalist id="cb-station-list"></datalist>
+    </div>
+    <div class="hide-actions">
+      <button type="button" class="game-btn small secondary" id="cb-find-station">Find</button>
+      <button type="button" class="game-btn small secondary" id="cb-clear-focus">Clear focus</button>
+    </div>
+
+    <hr />
+    <p class="sub">Stations stay if any part of their hide circle could still contain the hider. Paste Google or Apple Maps links, or lat/lng.</p>
+    <div class="game-row" style="flex-wrap:wrap">
+      <input id="cb-radius-val" type="number" step="any" value="1" min="0.01" inputmode="decimal" style="flex:1;min-width:70px" />
+      <select id="cb-radius-unit" style="flex:0 0 auto">
+        <option value="miles" selected>miles</option>
+        <option value="kilometers">km</option>
+      </select>
+    </div>
+    <button type="button" class="game-btn" id="cb-add-radius">+ Radius</button>
+    <button type="button" class="game-btn secondary" id="cb-add-thermo">+ Thermometer</button>
+    <button type="button" class="game-btn secondary" id="cb-add-borough">+ Same borough</button>
+    <button type="button" class="game-btn secondary" id="cb-add-airport">+ Same commercial airport</button>
+    <div id="cb-game-list"></div>
+    <button type="button" class="game-btn secondary" id="cb-clear-all">Clear all questions</button>
+    <p class="game-hint">Long-press the map to copy coordinates. Airports: Skyports, LaGuardia, Newark. Jersey counts as a borough.</p>
+  </div>
+</div>
+<script src="config.js"></script>
+<script src="geo-utils.js"></script>
+<script src="citibike-game.js"></script>
+<script src="citibike-app.js"></script>
+</body>
+</html>
