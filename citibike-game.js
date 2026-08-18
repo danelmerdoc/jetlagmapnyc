@@ -557,11 +557,24 @@
         circle.properties = { kind: 'radius-line', id: q.id, color: q.color };
         features.push(circle);
       } else if (q.type === 'thermometer' && q.latA != null && q.latB != null) {
+        const link = Geo().thermometerLinkLine(q);
+        if (link) {
+          link.properties = { kind: 'thermo-link', id: q.id, color: q.colorA || q.color };
+          features.push(link);
+        }
         const bisector = Geo().thermometerBisectorLine(q);
-        bisector.properties = {
-          kind: 'thermo-bisector', id: q.id, color: q.colorB || q.color,
-        };
-        features.push(bisector);
+        if (bisector) {
+          bisector.properties = {
+            kind: 'thermo-bisector', id: q.id, color: q.colorB || q.color,
+          };
+          features.push(bisector);
+        }
+        const mid = Geo().thermometerMidpoint(q);
+        if (mid) {
+          features.push(turf.feature(turf.point(mid).geometry, {
+            kind: 'thermo-mid', id: q.id, color: q.colorB || q.color,
+          }));
+        }
       } else if (q.type === 'coastline' && q.lat != null) {
         features.push(turf.feature(turf.point([q.lng, q.lat]).geometry, {
           kind: 'coast-point', id: q.id, color: q.color,

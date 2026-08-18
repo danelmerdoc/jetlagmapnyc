@@ -352,6 +352,7 @@
     set('cb-stations-active', 'circle-stroke-color', casing);
     set('cb-stations-active', 'circle-stroke-width', STATION_DOT_STROKE);
     set('cb-questions-airports', 'circle-stroke-color', casing);
+    set('cb-questions-thermo-mid', 'circle-stroke-color', casing);
     set('cb-questions-thermo', 'line-opacity', theme === 'dark' ? 0.95 : 0.88);
     set('cb-questions-radius-line', 'line-width', theme === 'dark' ? 2.8 : 2.4);
     set('cb-questions-radius-line', 'line-opacity', theme === 'dark' ? 0.95 : 0.9);
@@ -511,12 +512,32 @@
     }
     if (!map.getLayer('cb-questions-thermo')) {
       addLayer({
+        id: 'cb-questions-thermo-link', type: 'line', source: 'cb-questions',
+        filter: ['==', ['get', 'kind'], 'thermo-link'],
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': 1.8,
+          'line-dasharray': [2, 2],
+          'line-opacity': 0.7,
+        },
+      });
+      addLayer({
         id: 'cb-questions-thermo', type: 'line', source: 'cb-questions',
         filter: ['==', ['get', 'kind'], 'thermo-bisector'],
         paint: {
           'line-color': ['get', 'color'],
           'line-width': 2.8,
           'line-opacity': theme === 'dark' ? 0.95 : 0.88,
+        },
+      });
+      addLayer({
+        id: 'cb-questions-thermo-mid', type: 'circle', source: 'cb-questions',
+        filter: ['==', ['get', 'kind'], 'thermo-mid'],
+        paint: {
+          'circle-radius': 4,
+          'circle-color': ['get', 'color'],
+          'circle-stroke-color': casing,
+          'circle-stroke-width': 1.5,
         },
       });
       addLayer({

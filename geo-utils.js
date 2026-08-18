@@ -71,59 +71,140 @@ window.JetLagGeo = (function () {
     };
   }
 
-  function thermoFrame(q) {
-    const lat0 = (q.latA + q.latB) / 2;
-    const lng0 = (q.lngA + q.lngB) / 2;
-    const f = localFrame(lat0, lng0);
-    const [ax, ay] = f.xy(q.lngA, q.latA);
-    const [bx, by] = f.xy(q.lngB, q.latB);
-    const len = Math.hypot(bx - ax, by - ay) || 1;
-    return {
-      f,
-      ux: (bx - ax) / len,
-      uy: (by - ay) / len,
-      mx: (ax + bx) / 2,
-      my: (ay + by) / 2,
-    };
+  const EARTH_RADIUS_MI = 3958.7613;
+  const D2R = Math.PI / 180;
+  const R2D = 180 / Math.PI;
+
+  function toVec(lng, lat) {
+    const p = lat * D2R;
+    const l = lng * D2R;
+    const c = Math.cos(p);
+    return [c * Math.cos(l), c * Math.sin(l), Math.sin(p)];
   }
 
-  /** Miles from the perpendicular bisector; positive means closer to B (warmer). */
+  function toLngLat(v) {
+    const z = Math.max(-1, Math.min(1, v[2]));
+    return [Math.atan2(v[1], v[0]) * R2D, Math.asin(z) * R2D];
+  }
+
+  function unit(v) {
+    const m = Math.hypot(v[0], v[1], v[2]);
+    if (!m) return null;
+    return [v[0] / m, v[1] / m, v[2] / m];
+  }
+
+  function dot3(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+  function cross3(a, b) {
+    return [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0],
+    ];
+  }
+
+  /** ca*a + cb*b */
+  function mix3(a, ca, b, cb) {
+    return [a[0] * ca + b[0] * cb, a[1] * ca + b[1] * cb, a[2] * ca + b[2] * cb];
+  }
+
+  /**
+   * Exact perpendicular bisector of A and B. A point P is equidistant from both
+   * exactly when P·(A-B) = 0, so the bisector is the great circle whose normal is
+   * `pole`. `mid` is the true geodesic midpoint and lies on that circle, and
+   * `sweep` runs along the circle through `mid`. Nothing here approximates the
+   * sphere with a flat frame, so the drawn line is the equidistant locus itself.
+   */
+  let bisCache = { key: null, bis: null };
+
+  function thermoBisector(q) {
+    if (![q.lngA, q.latA, q.lngB, q.latB].every(Number.isFinite)) return null;
+    // Elimination asks for this once per station, so keep the last one.
+    const key = `${q.lngA},${q.latA},${q.lngB},${q.latB}`;
+    if (bisCache.key === key) return bisCache.bis;
+    const a = toVec(q.lngA, q.latA);
+    const b = toVec(q.lngB, q.latB);
+    const pole = unit(mix3(a, 1, b, -1));
+    const mid = unit(mix3(a, 1, b, 1));
+    const sweep = pole && mid ? unit(cross3(pole, mid)) : null;
+    const bis = sweep ? { pole, mid, sweep } : null;
+    bisCache = { key, bis };
+    return bis;
+  }
+
+  /**
+   * Miles from the bisector; positive means closer to B, the warm end.
+   * P·pole > 0 means P is nearer A, so the sign is flipped.
+   */
   function thermometerSignedMiles(q, lng, lat) {
-    const t = thermoFrame(q);
-    const [x, y] = t.f.xy(lng, lat);
-    return (x - t.mx) * t.ux + (y - t.my) * t.uy;
+    const bis = thermoBisector(q);
+    if (!bis) return 0;
+    const s = Math.max(-1, Math.min(1, dot3(bis.pole, toVec(lng, lat))));
+    return -Math.asin(s) * EARTH_RADIUS_MI;
   }
 
-  /** Points along the bisector, from +R to -R miles either side of the midpoint. */
-  function bisectorPoints(t, R, steps) {
+  /**
+   * Unit vectors along the bisector, from +radiusMi to -radiusMi either side of
+   * the midpoint. Densified because Mapbox draws each segment straight.
+   */
+  function bisectorArc(bis, radiusMi, steps) {
+    const max = radiusMi / EARTH_RADIUS_MI;
     const out = [];
     for (let i = 0; i <= steps; i++) {
-      const s = (1 - 2 * (i / steps)) * R;
-      out.push([t.mx - t.uy * s, t.my + t.ux * s]);
+      const t = (1 - 2 * (i / steps)) * max;
+      out.push(mix3(bis.mid, Math.cos(t), bis.sweep, Math.sin(t)));
     }
     return out;
   }
 
-  /**
-   * Half-plane on the warmer (B) or colder (A) side of the perpendicular bisector.
-   * Edges are densified because Mapbox draws segments straight in Mercator.
-   */
+  /** Region on the warmer (B) or colder (A) side of the bisector. */
   function thermometerRegion(q, warmer) {
-    const t = thermoFrame(q);
-    const R = 150;
-    const sgn = warmer ? 1 : -1;
-    const near = bisectorPoints(t, R, 48);
-    const far = near.map(([x, y]) => [x + sgn * t.ux * R, y + sgn * t.uy * R]).reverse();
-    const ring = near.concat(far).map(([x, y]) => t.f.ll(x, y));
+    const bis = thermoBisector(q);
+    if (!bis) return WORLD;
+    const near = bisectorArc(bis, 500, 96);
+    // Arc points are perpendicular to `pole`, so stepping along it by angle t
+    // lands exactly t radians off the bisector. Warm side is where P·pole < 0.
+    const t = 500 / EARTH_RADIUS_MI;
+    const side = warmer ? -1 : 1;
+    const far = near
+      .map(v => mix3(v, Math.cos(t), bis.pole, side * Math.sin(t)))
+      .reverse();
+    const ring = near.concat(far).map(toLngLat);
     ring.push(ring[0]);
     return turf.polygon([ring]);
   }
 
-  /** Long segment through the midpoint, perpendicular to A–B. */
+  /** The bisector itself, drawn through the geodesic midpoint. */
   function thermometerBisectorLine(q, lengthMi) {
-    const t = thermoFrame(q);
-    const pts = bisectorPoints(t, lengthMi || 50, 32);
-    return turf.lineString(pts.map(([x, y]) => t.f.ll(x, y)));
+    const bis = thermoBisector(q);
+    if (!bis) return null;
+    return turf.lineString(bisectorArc(bis, lengthMi || 60, 64).map(toLngLat));
+  }
+
+  /** The A–B geodesic, so the bisector can be read against what it bisects. */
+  function thermometerLinkLine(q) {
+    const bis = thermoBisector(q);
+    if (!bis) return null;
+    const a = toVec(q.lngA, q.latA);
+    const b = toVec(q.lngB, q.latB);
+    const span = Math.acos(Math.max(-1, Math.min(1, dot3(a, b))));
+    if (!span) return null;
+    const steps = 24;
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * span;
+      // Rotate from A toward B within their common plane.
+      const v = unit(mix3(a, Math.cos(t), unit(mix3(b, 1, a, -dot3(a, b))), Math.sin(t)));
+      pts.push(toLngLat(v || a));
+    }
+    return turf.lineString(pts);
+  }
+
+  /** Geodesic midpoint of the two thermometer ends. */
+  function thermometerMidpoint(q) {
+    const bis = thermoBisector(q);
+    if (!bis) return null;
+    return toLngLat(bis.mid);
   }
 
   function flattenRings(poly) {
@@ -267,6 +348,7 @@ window.JetLagGeo = (function () {
   return {
     WORLD, intersect, holedMask, modifyMapData, geodesicCircle,
     thermometerRegion, thermometerBisectorLine, thermometerSignedMiles,
+    thermometerMidpoint, thermometerLinkLine,
     localFrame, flattenRings, minDistanceToRingsMi, MI_PER_DEG_LAT,
     buildSegmentIndex, minDistanceIndexedMi,
     voronoiCellContaining, unionMany, safePoly,
