@@ -204,7 +204,7 @@
     for (const q of Game().getQuestions()) {
       if (!q.open) continue;
       Game().ensureQuestionCoords(q.id, center);
-      if ((q.type === 'radius' || q.type === 'airport' || q.type === 'coastline') && q.lat != null) {
+      if (Game().usesCenter(q) && q.lat != null) {
         const m = new mapboxgl.Marker({ element: pinEl(q.color), draggable: true, anchor: 'bottom' })
           .setLngLat([q.lng, q.lat])
           .addTo(map);
@@ -723,6 +723,49 @@
     document.getElementById('cb-live-endgame')?.addEventListener('change', e => {
       if (e.target.checked) startLiveEndgame();
       else stopLiveEndgame();
+    });
+
+    let timerRunning = false;
+    let timerAccumMs = 0;
+    let timerStartedAt = 0;
+    let timerTick = null;
+    const timerEl = document.getElementById('cb-timer');
+    function timerMs() {
+      return timerRunning ? timerAccumMs + (Date.now() - timerStartedAt) : timerAccumMs;
+    }
+    function paintTimer() {
+      if (!timerEl) return;
+      const totalSec = Math.floor(timerMs() / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      timerEl.textContent = h > 0
+        ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+    document.getElementById('cb-timer-start')?.addEventListener('click', () => {
+      if (timerRunning) return;
+      timerRunning = true;
+      timerStartedAt = Date.now();
+      clearInterval(timerTick);
+      timerTick = setInterval(paintTimer, 250);
+      paintTimer();
+    });
+    document.getElementById('cb-timer-pause')?.addEventListener('click', () => {
+      if (!timerRunning) return;
+      timerAccumMs = timerMs();
+      timerRunning = false;
+      clearInterval(timerTick);
+      timerTick = null;
+      paintTimer();
+    });
+    document.getElementById('cb-timer-reset')?.addEventListener('click', () => {
+      timerRunning = false;
+      timerAccumMs = 0;
+      timerStartedAt = 0;
+      clearInterval(timerTick);
+      timerTick = null;
+      paintTimer();
     });
 
     document.getElementById('cb-clear-focus')?.addEventListener('click', () => setFocusStation(null));
