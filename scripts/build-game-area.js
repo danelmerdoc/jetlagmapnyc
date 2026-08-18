@@ -7,6 +7,10 @@
  *   grey.geojson            — metro frame minus playable (static overlay)
  *   playable_border.geojson — LineString outline
  *   game_area.geojson       — detailed land union (station logic only)
+ *
+ * Playable shell: union of borough/city land borders, merged where they touch.
+ * Water crossings are simplified to straight segments across NYC Harbor (south)
+ * and the upper Hudson River (north) only — no line down the Hudson interior.
  */
 const fs = require('fs');
 const path = require('path');
@@ -18,28 +22,9 @@ const UA = 'JetLagNYC-map/1.0 (citibike hide and seek)';
 /** Metro frame — big enough to pan, small enough for Mapbox fill on mobile. */
 const FRAME = [-75.8, 39.6, -71.4, 42.2];
 
-/**
- * Hand-tuned outer shell matching the Jet Lag reference map:
- * 4 boroughs + Hoboken/Jersey City, Hudson interior (no NY/NJ line),
- * Rockaways in, Staten Island / Elmont / Mount Vernon / Newark out.
- */
-const PLAYABLE_SHELL = [
-  [-74.018, 40.892],
-  [-74.042, 40.878],
-  [-74.058, 40.835],
-  [-74.118, 40.768],
-  [-74.105, 40.698],
-  [-74.042, 40.578],
-  [-73.795, 40.542],
-  [-73.715, 40.605],
-  [-73.725, 40.695],
-  [-73.735, 40.775],
-  [-73.755, 40.855],
-  [-73.782, 40.898],
-  [-73.833, 40.906],
-  [-73.908, 40.914],
-  [-74.018, 40.892],
-];
+/** Buffer used only to connect disconnected land parts before tracing the outer ring. */
+const CONNECT_BUFFER_MI = 0.2;
+const SIMPLIFY_TOLERANCE = 0.0008;
 
 function unionAll(parts, label) {
   let area = null;
@@ -62,6 +47,70 @@ function hudsonStrip(manhattan, nj) {
     mb[0] + 0.07,
     jb[3],
   ]);
+}
+
+/** Water zones where the outer ring is replaced by straight chords. */
+function inHarbor(lng, lat) {
+  return lat < 40.60 && lng > -74.18 && lng < -73.68;
+}
+
+function inUpperHudson(lng, lat) {
+  return lat > 40.82 && lng > -74.15 && lng < -73.88;
+}
+
+function isWaterVertex(lng, lat, landUnion) {
+  if (!inHarbor(lng, lat) && !inUpperHudson(lng, lat)) return false;
+  return !turf.booleanPointInPolygon([lng, lat], landUnion);
+}
+
+function closeRing(ring) {
+  if (!ring.length) return ring;
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) ring.push(first.slice());
+  return ring;
+}
+
+/** Collapse consecutive water vertices into single harbor / upper-Hudson chords. */
+function collapseWaterRuns(ring, landUnion) {
+  const out = [];
+  const n = ring.length - 1;
+  let i = 0;
+  while (i < n) {
+    const p = ring[i];
+    if (!isWaterVertex(p[0], p[1], landUnion)) {
+      out.push(p.slice());
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < n && isWaterVertex(ring[i][0], ring[i][1], landUnion)) i++;
+    const end = i - 1;
+    const prev = out[out.length - 1];
+    if (!prev || prev[0] !== ring[start][0] || prev[1] !== ring[start][1]) {
+      out.push(ring[start].slice());
+    }
+    if (end > start) out.push(ring[end].slice());
+  }
+  return closeRing(out);
+}
+
+/**
+ * Trace the outer boundary of merged borough/city land, then simplify harbor
+ * and upper-Hudson crossings to straight segments.
+ */
+function buildPlayableShell(landUnion) {
+  const connected = turf.buffer(landUnion, CONNECT_BUFFER_MI, { units: 'miles', steps: 16 });
+  if (connected.geometry.type !== 'Polygon') {
+    throw new Error(`land union buffer did not yield a single polygon (${connected.geometry.type})`);
+  }
+  let ring = connected.geometry.coordinates[0];
+  ring = turf.simplify(turf.polygon([ring]), {
+    tolerance: SIMPLIFY_TOLERANCE,
+    highQuality: true,
+  }).geometry.coordinates[0];
+  ring = collapseWaterRuns(ring, landUnion);
+  return ring;
 }
 
 async function nominatim(query, cacheFile) {
@@ -108,11 +157,13 @@ async function nominatim(query, cacheFile) {
   });
   gameArea.properties = { name: 'Citi Bike playable area' };
 
-  const playable = turf.polygon([PLAYABLE_SHELL], { name: 'playable' });
+  console.log('\nBuild playable shell from land borders…');
+  const shellRing = buildPlayableShell(gameArea);
+  const playable = turf.polygon([shellRing], { name: 'playable' });
   const frame = turf.bboxPolygon(FRAME);
   const grey = turf.mask(playable, frame);
   grey.properties = { name: 'grey' };
-  const border = turf.lineString(PLAYABLE_SHELL, { name: 'playable-border' });
+  const border = turf.lineString(shellRing, { name: 'playable-border' });
 
   fs.writeFileSync(path.join(DATA, 'playable.geojson'), JSON.stringify(turf.featureCollection([playable])));
   fs.writeFileSync(path.join(DATA, 'grey.geojson'), JSON.stringify(turf.featureCollection([grey])));
@@ -138,7 +189,7 @@ async function nominatim(query, cacheFile) {
     ['Newark', -74.172, 40.736, true],
   ];
 
-  console.log('\nplayable shell', PLAYABLE_SHELL.length, 'pts',
+  console.log('\nplayable shell', shellRing.length, 'pts',
     '| stations in shell', inShell, '/', st.features.length);
   console.log('game_area stations', inArea, '/', st.features.length);
   console.log('grey rings', grey.geometry.coordinates.length);

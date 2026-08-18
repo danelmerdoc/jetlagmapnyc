@@ -1284,9 +1284,9 @@
     const [boro, coast, area, grey, border] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
       fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
-      fetch('data/game_area.geojson?v=6').then(r => r.json()).catch(() => null),
-      fetch('data/grey.geojson?v=6').then(r => r.json()).catch(() => null),
-      fetch('data/playable_border.geojson?v=6').then(r => r.json()).catch(() => null),
+      fetch('data/game_area.geojson?v=7').then(r => r.json()).catch(() => null),
+      fetch('data/grey.geojson?v=7').then(r => r.json()).catch(() => null),
+      fetch('data/playable_border.geojson?v=7').then(r => r.json()).catch(() => null),
       Geo().snapAirportsViaTilequery(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
     airportBisectors.clear();
