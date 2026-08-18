@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 /**
- * Build Citi Bike playable polygons and the grey overlay.
+ * Precompute Citi Bike map overlays (run once at build / when boundaries change).
  *
- * playable.geojson  — ONE polygon: Manhattan, Bronx, Brooklyn, Queens,
- *                     Hoboken, Jersey City, plus a Hudson strip so NY/NJ
- *                     are a single region. Outer ring only.
- * grey.geojson      — metro rectangle minus that polygon (precomputed).
- * game_area.geojson — same union, used to filter stations.
- *
- * Usage: node scripts/build-game-area.js
+ * Outputs:
+ *   playable.geojson        — single polygon (display + grey cut-out)
+ *   grey.geojson            — metro frame minus playable (static overlay)
+ *   playable_border.geojson — LineString outline
+ *   game_area.geojson       — detailed land union (station logic only)
  */
 const fs = require('fs');
 const path = require('path');
@@ -17,38 +15,42 @@ const turf = require(process.env.TURF_PATH || '@turf/turf');
 const DATA = path.join(__dirname, '../data');
 const UA = 'JetLagNYC-map/1.0 (citibike hide and seek)';
 
-/** Tight metro frame — large enough to cover panning, small enough for Mapbox fill. */
+/** Metro frame — big enough to pan, small enough for Mapbox fill on mobile. */
 const FRAME = [-75.8, 39.6, -71.4, 42.2];
+
+/**
+ * Hand-tuned outer shell matching the Jet Lag reference map:
+ * 4 boroughs + Hoboken/Jersey City, Hudson interior (no NY/NJ line),
+ * Rockaways in, Staten Island / Elmont / Mount Vernon / Newark out.
+ */
+const PLAYABLE_SHELL = [
+  [-74.018, 40.892],
+  [-74.042, 40.878],
+  [-74.058, 40.835],
+  [-74.118, 40.768],
+  [-74.105, 40.698],
+  [-74.042, 40.578],
+  [-73.795, 40.542],
+  [-73.715, 40.605],
+  [-73.725, 40.695],
+  [-73.735, 40.775],
+  [-73.755, 40.855],
+  [-73.782, 40.898],
+  [-73.833, 40.906],
+  [-73.908, 40.914],
+  [-74.018, 40.892],
+];
 
 function unionAll(parts, label) {
   let area = null;
   for (const part of parts) {
     const name = part.properties?.BoroName || part.properties?.name || 'part';
     if (!area) { area = part; console.log(`  ${label}:`, name); continue; }
-    const next = turf.union(turf.featureCollection([area, part]));
-    if (!next) throw new Error(`union failed at ${name}`);
-    area = next;
+    area = turf.union(turf.featureCollection([area, part]));
+    if (!area) throw new Error(`union failed at ${name}`);
     console.log('  +', name);
   }
   return area;
-}
-
-function outerPolygon(feature) {
-  const g = feature.geometry;
-  let ring;
-  if (g.type === 'Polygon') {
-    ring = g.coordinates[0];
-  } else {
-    let best = g.coordinates[0][0];
-    let bestA = -1;
-    for (const poly of g.coordinates) {
-      let a = 0;
-      try { a = turf.area(turf.polygon([poly[0]])); } catch (_) { a = 0; }
-      if (a > bestA) { bestA = a; best = poly[0]; }
-    }
-    ring = best;
-  }
-  return turf.polygon([ring]);
 }
 
 function hudsonStrip(manhattan, nj) {
@@ -59,7 +61,7 @@ function hudsonStrip(manhattan, nj) {
     Math.max(jb[1], 40.69),
     mb[0] + 0.07,
     jb[3],
-  ], { name: 'Hudson strip' });
+  ]);
 }
 
 async function nominatim(query, cacheFile) {
@@ -94,51 +96,36 @@ async function nominatim(query, cacheFile) {
   );
 
   const nj = turf.union(turf.featureCollection([hoboken, jerseyCity]));
-  nj.properties = { name: 'Hoboken + Jersey City' };
-
-  const parts = [
+  const landParts = [
     byName.Manhattan, byName.Bronx, byName.Brooklyn, byName.Queens,
     hoboken, jerseyCity, hudsonStrip(byName.Manhattan, nj),
   ];
 
-  console.log('\nUnion playable…');
-  const merged = unionAll(parts, 'playable');
-
-  console.log('\nOne display polygon (concave hull)…');
-  const sample = [];
-  const rings = merged.geometry.type === 'MultiPolygon'
-    ? merged.geometry.coordinates.map(p => p[0])
-    : [merged.geometry.coordinates[0]];
-  for (const ring of rings) {
-    const step = Math.max(1, Math.floor(ring.length / 80));
-    for (let i = 0; i < ring.length; i += step) sample.push(turf.point(ring[i]));
-  }
-  let playable = turf.concave(turf.featureCollection(sample), {
-    maxEdge: 12,
-    units: 'kilometers',
+  console.log('\nUnion game_area (station logic)…');
+  const gameArea = turf.simplify(unionAll(landParts, 'game_area'), {
+    tolerance: 0.0002,
+    highQuality: true,
   });
-  playable = outerPolygon(playable);
-  playable.properties = { name: 'playable' };
+  gameArea.properties = { name: 'Citi Bike playable area' };
 
+  const playable = turf.polygon([PLAYABLE_SHELL], { name: 'playable' });
   const frame = turf.bboxPolygon(FRAME);
   const grey = turf.mask(playable, frame);
   grey.properties = { name: 'grey' };
-
-  const border = turf.lineString(playable.geometry.coordinates[0]);
-  border.properties = { name: 'playable-border' };
-
-  const area = turf.simplify(outerPolygon(merged), { tolerance: 0.0002, highQuality: true });
-  area.properties = { name: 'Citi Bike playable area' };
+  const border = turf.lineString(PLAYABLE_SHELL, { name: 'playable-border' });
 
   fs.writeFileSync(path.join(DATA, 'playable.geojson'), JSON.stringify(turf.featureCollection([playable])));
   fs.writeFileSync(path.join(DATA, 'grey.geojson'), JSON.stringify(turf.featureCollection([grey])));
   fs.writeFileSync(path.join(DATA, 'playable_border.geojson'), JSON.stringify(turf.featureCollection([border])));
-  fs.writeFileSync(path.join(DATA, 'game_area.geojson'), JSON.stringify(turf.featureCollection([area])));
+  fs.writeFileSync(path.join(DATA, 'game_area.geojson'), JSON.stringify(turf.featureCollection([gameArea])));
 
   const st = JSON.parse(fs.readFileSync(path.join(DATA, 'citibike_stations.geojson'), 'utf8'));
-  let inside = 0;
+  let inShell = 0;
+  let inArea = 0;
   for (const f of st.features) {
-    if (turf.booleanPointInPolygon(f.geometry.coordinates, playable)) inside++;
+    const c = f.geometry.coordinates;
+    if (turf.booleanPointInPolygon(c, playable)) inShell++;
+    if (turf.booleanPointInPolygon(c, gameArea)) inArea++;
   }
 
   const checks = [
@@ -150,15 +137,15 @@ async function nominatim(query, cacheFile) {
     ['Staten Island', -74.15, 40.58, true],
     ['Newark', -74.172, 40.736, true],
   ];
-  console.log('\nplayable', (turf.area(playable) / 2589988).toFixed(1), 'sq mi',
-    '| stations', inside, '/', st.features.length,
-    '| rings', playable.geometry.coordinates.length,
-    '| pts', playable.geometry.coordinates[0].length);
+
+  console.log('\nplayable shell', PLAYABLE_SHELL.length, 'pts',
+    '| stations in shell', inShell, '/', st.features.length);
+  console.log('game_area stations', inArea, '/', st.features.length);
   console.log('grey rings', grey.geometry.coordinates.length);
   for (const [name, lng, lat, wantGrey] of checks) {
     const g = turf.booleanPointInPolygon([lng, lat], grey);
     const p = turf.booleanPointInPolygon([lng, lat], playable);
     const ok = g === wantGrey && p === !wantGrey;
-    console.log(ok ? '  ok ' : '  FAIL ', name, 'grey=' + g, 'playable=' + p);
+    console.log(ok ? '  ok ' : '  FAIL ', name);
   }
 })().catch(e => { console.error(e); process.exit(1); });

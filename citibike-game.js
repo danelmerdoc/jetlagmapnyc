@@ -40,9 +40,8 @@
   let coastSimple = null;
   let coastMask = null;
   let gameArea = null;
-  let playablePoly = null;
-  let greyStatic = null;
-  let playableBorder = null;
+  let greyOverlay = { type: 'FeatureCollection', features: [] };
+  let playableOutline = { type: 'FeatureCollection', features: [] };
   let onChange = null;
 
   function nextColor() {
@@ -840,70 +839,20 @@
       }
     }
 
-    if (playablePoly) area = Geo().intersect(area, playablePoly) || area;
+    if (gameArea) area = Geo().intersect(area, gameArea) || area;
 
     areaCache = { key, area };
     return area;
   }
 
-  let maskCache = { key: null, mask: null, border: null };
-
-  function boroughQuestions() {
-    return questions.filter(q =>
-      q.answer != null && q.type === 'matching' && (q.subtype === 'borough' || q.subtype === 'landmass'));
-  }
-
-  /** Remaining playable land after borough / land-mass answers. Null = full start polygon. */
-  function remainingPlayable() {
-    const qs = boroughQuestions();
-    if (!qs.length) return null;
-    let area = playablePoly;
-    if (!area) return null;
-    for (const q of qs) {
-      if (q.subtype === 'borough') {
-        const boro = seekerBorough(q);
-        const poly = boro && boroughPoly(boro);
-        if (!poly) continue;
-        area = Geo().modifyMapData(area, poly, q.answer === 'same');
-      } else if (q.subtype === 'landmass') {
-        const mass = seekerLandMass(q);
-        const poly = mass && landMassPoly(mass);
-        if (!poly) continue;
-        area = Geo().modifyMapData(area, poly, q.answer === 'same');
-      }
-    }
-    return Geo().safePoly(area);
-  }
-
-  function ensureMaskCache() {
-    const key = boroughQuestions().map(q => `${q.id}:${q.subtype}:${q.answer}`).join('|') || 'start';
-    if (maskCache.key === key) return maskCache;
-    const remaining = remainingPlayable();
-    if (!remaining) {
-      maskCache = {
-        key,
-        mask: greyStatic || EMPTY_FC,
-        border: playableBorder || EMPTY_FC,
-      };
-      return maskCache;
-    }
-    let grey = null;
-    try { grey = turf.mask(remaining, Geo().MASK_FRAME); } catch (_) { grey = null; }
-    const line = Geo().outerRingLine(remaining);
-    maskCache = {
-      key,
-      mask: grey ? { type: 'FeatureCollection', features: [grey] } : (greyStatic || EMPTY_FC),
-      border: line ? { type: 'FeatureCollection', features: [line] } : (playableBorder || EMPTY_FC),
-    };
-    return maskCache;
-  }
-
+  /** Precomputed grey fill — no runtime geometry. */
   function eliminatedMask() {
-    return ensureMaskCache().mask;
+    return greyOverlay;
   }
 
+  /** Precomputed blue outline — no runtime geometry. */
   function possibleAreaGeoJSON() {
-    return ensureMaskCache().border;
+    return playableOutline;
   }
 
   function questionsGeoJSON() {
@@ -1328,18 +1277,16 @@
     airportBisectors.clear();
     activeCache = { key: null, list: null };
     areaCache = { key: null, area: null };
-    maskCache = { key: null, mask: null, border: null };
     notifyChange();
   }
 
   async function initStationData(geojson) {
-    const [boro, coast, area, playable, grey, border] = await Promise.all([
+    const [boro, coast, area, grey, border] = await Promise.all([
       fetch('data/nyc_boroughs.geojson').then(r => r.json()).catch(() => null),
       fetch('data/coastline.geojson').then(r => r.json()).catch(() => null),
-      fetch('data/game_area.geojson?v=5').then(r => r.json()).catch(() => null),
-      fetch('data/playable.geojson?v=5').then(r => r.json()).catch(() => null),
-      fetch('data/grey.geojson?v=5').then(r => r.json()).catch(() => null),
-      fetch('data/playable_border.geojson?v=5').then(r => r.json()).catch(() => null),
+      fetch('data/game_area.geojson?v=6').then(r => r.json()).catch(() => null),
+      fetch('data/grey.geojson?v=6').then(r => r.json()).catch(() => null),
+      fetch('data/playable_border.geojson?v=6').then(r => r.json()).catch(() => null),
       Geo().snapAirportsViaTilequery(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
     airportBisectors.clear();
@@ -1352,12 +1299,9 @@
     }
     clearBoroughCaches();
     gameArea = area?.features?.[0] || null;
-    playablePoly = playable?.features?.[0] || gameArea;
-    greyStatic = grey || null;
-    playableBorder = border || null;
-    maskCache = { key: null, mask: null, border: null };
+    greyOverlay = grey || EMPTY_FC;
+    playableOutline = border || EMPTY_FC;
     areaCache = { key: null, area: null };
-    maskCache = { key: null, mask: null, border: null };
     activeCache = { key: null, list: null };
     try {
       coastFeature = coast?.features?.[0] || null;

@@ -31,7 +31,7 @@
     if (theme === 'dark') {
       return { fill: '#64748b', fillOpacity: 0.52, border: '#60a5fa', borderWidth: 2.8 };
     }
-    return { fill: '#64748b', fillOpacity: 0.55, border: '#2563eb', borderWidth: 2.5 };
+    return { fill: '#94a3b8', fillOpacity: 0.55, border: '#2563eb', borderWidth: 2.5 };
   }
 
   function zoneStyle() {
