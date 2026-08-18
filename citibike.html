@@ -47,6 +47,10 @@
   .panel-toggle { border:none; background:transparent; color:var(--text); font-size:18px; line-height:1; padding:4px 6px; cursor:pointer; }
   .panel.collapsed .panel-body { display:none; }
   .panel.collapsed .panel-head { border-bottom:none; }
+  .panel-timer {
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    padding:10px 14px; border-bottom:1px solid var(--border);
+  }
   .panel-body { padding:12px 14px 16px; overflow-y:auto; -webkit-overflow-scrolling:touch; }
   .sub { font-size:11px; color:var(--muted); margin:0 0 10px; line-height:1.4; }
   .status { font-size:12px; font-weight:700; color:var(--bike); margin:0 0 8px; }
@@ -163,17 +167,17 @@
 </nav>
 <div id="cb-live-banner" class="live-banner"></div>
 <div id="panel" class="panel">
+  <div class="panel-timer">
+    <span id="cb-timer" class="timer-readout">00:00</span>
+    <button type="button" class="game-btn small" id="cb-timer-start">Start</button>
+    <button type="button" class="game-btn small secondary" id="cb-timer-pause">Pause</button>
+    <button type="button" class="game-btn small secondary" id="cb-timer-reset">Reset</button>
+  </div>
   <div class="panel-head" id="panel-head">
     <h1>Citi Bike Hide + Seek</h1>
     <button type="button" class="panel-toggle" id="panel-toggle" aria-label="Toggle sidebar">−</button>
   </div>
   <div class="panel-body">
-    <div class="timer-row">
-      <span id="cb-timer" class="timer-readout">00:00</span>
-      <button type="button" class="game-btn small" id="cb-timer-start">Start</button>
-      <button type="button" class="game-btn small secondary" id="cb-timer-pause">Pause</button>
-      <button type="button" class="game-btn small secondary" id="cb-timer-reset">Reset</button>
-    </div>
     <p class="status" id="cb-status">Loading map…</p>
     <p class="sub" id="cb-focus-info">Tap a station to isolate its hide circle. Double-tap outside that circle to unselect.</p>
 
@@ -239,7 +243,7 @@
 </div>
 <script src="config.js"></script>
 <script src="geo-utils.js?v=8"></script>
-<script src="citibike-game.js?v=15"></script>
-<script src="citibike-app.js?v=13"></script>
+<script src="citibike-game.js?v=16"></script>
+<script src="citibike-app.js?v=14"></script>
 </body>
 </html>

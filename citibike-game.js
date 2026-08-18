@@ -235,6 +235,9 @@
   }
 
   const NJ_BOX = [-74.35, 40.55, -73.85, 41.05];
+  /** Limits gray elimination overlay to the metro — not the whole Atlantic. */
+  const METRO_MASK_CLIP = [-74.22, 40.50, -73.72, 40.92];
+  const METRO_MASK_POLY = () => turf.bboxPolygon(METRO_MASK_CLIP);
   const NJ_BOX_RING = [
     [NJ_BOX[0], NJ_BOX[1]], [NJ_BOX[2], NJ_BOX[1]], [NJ_BOX[2], NJ_BOX[3]],
     [NJ_BOX[0], NJ_BOX[3]], [NJ_BOX[0], NJ_BOX[1]],
@@ -289,6 +292,55 @@
   }
 
   const boroughMaskCache = {};
+
+  let playableAreaCache = null;
+  let playableIndexCache = null;
+
+  function hobokenPoly() {
+    return turf.bboxPolygon([-74.042, 40.734, -74.024, 40.758]);
+  }
+
+  function jerseyCityPoly() {
+    return turf.bboxPolygon([-74.098, 40.675, -74.032, 40.755]);
+  }
+
+  function playableAreaPoly() {
+    if (playableAreaCache) return playableAreaCache;
+    const parts = BOROUGHS.filter(b => b !== 'Jersey').map(b => boroughLand(b)).filter(Boolean);
+    parts.push(hobokenPoly(), jerseyCityPoly());
+    playableAreaCache = parts.length ? Geo().unionMany(parts) : null;
+    return playableAreaCache;
+  }
+
+  function playableIndex() {
+    if (playableIndexCache) return playableIndexCache;
+    const area = playableAreaPoly();
+    if (!area) return null;
+    const rings = simplifiedRings(area, 0.00005);
+    playableIndexCache = rings.length ? Geo().buildSegmentIndex(rings, 0.02) : null;
+    return playableIndexCache;
+  }
+
+  function stationInPlayable(st) {
+    const area = playableAreaPoly();
+    if (!area) return true;
+    if (turf.booleanPointInPolygon([st.lng, st.lat], area)) return true;
+    const index = playableIndex();
+    if (!index) return false;
+    return Geo().minDistanceIndexedMi(index, st.lng, st.lat) <= hideRadiusMi + 1e-9;
+  }
+
+  function clippedElimMask(possible) {
+    const clip = METRO_MASK_POLY();
+    const p = Geo().safePoly(possible);
+    if (!p) return clip;
+    try {
+      const diff = turf.difference(turf.featureCollection([clip, p]));
+      return diff || clip;
+    } catch (_) {
+      return clip;
+    }
+  }
 
   function boroughPoly(name) {
     if (name !== 'Jersey') {
@@ -511,10 +563,11 @@
     const locked = questions.filter(q => q.answer != null);
     let list;
     if (!locked.length) {
-      list = stations.slice();
+      list = stations.filter(st => stationInPlayable(st));
     } else {
       list = [];
       for (const st of stations) {
+        if (!stationInPlayable(st)) continue;
         let ok = true;
         for (const q of locked) {
           if (!stationPassesQuestion(st, q)) { ok = false; break; }
@@ -628,12 +681,18 @@
 
   function possibleAreaFromQuestions() {
     const qs = questions.filter(q => q.answer != null);
-    if (!qs.length) return null;
-
     const key = answeredKey();
-    if (areaCache.key === key) return areaCache.area;
+    if (areaCache.key === key && areaCache.area) return areaCache.area;
 
-    let area = Geo().WORLD;
+    const playable = playableAreaPoly();
+    if (!playable) return null;
+    let area = playable;
+
+    if (!qs.length) {
+      areaCache = { key, area };
+      return area;
+    }
+
     for (const q of qs) {
       if (q.type === 'radius' && q.lat != null && q.lng != null) {
         const r = radiusMiles(q);
@@ -664,6 +723,8 @@
       }
     }
 
+    area = Geo().intersect(area, playable) || area;
+
     areaCache = { key, area };
     return area;
   }
@@ -681,7 +742,7 @@
     const f = Geo().safePoly(possible);
     maskCache = {
       key,
-      mask: Geo().holedMask(possible),
+      mask: clippedElimMask(possible),
       border: f ? { type: 'FeatureCollection', features: [f] } : EMPTY_FC,
     };
     return maskCache;
@@ -1128,6 +1189,11 @@
       Geo().snapAirportsToMapbox(AIRPORTS, window.MAPBOX_TOKEN).catch(() => null),
     ]);
     airportBisectors.clear();
+    playableAreaCache = null;
+    playableIndexCache = null;
+    areaCache = { key: null, area: null };
+    maskCache = { key: null, mask: null, border: null };
+    activeCache = { key: null, list: null };
     try {
       if (boro) {
         for (const f of boro.features) boroughPolys[f.properties.BoroName] = f;
