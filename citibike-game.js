@@ -24,12 +24,21 @@
     ['coastline', 'Coastline'],
     ['airport', 'Nearest airport'],
   ];
-  const LAND_MASSES = ['mainland', 'islands', 'longisland'];
-  const LAND_MASS_LABEL = {
-    mainland: 'Mainland (Bronx / NJ / Marble Hill)',
-    islands: 'Manhattan islands',
-    longisland: 'Brooklyn / Queens',
-  };
+  /** Filled by buildLandMassPolys — mainland, Long Island, and every detached island. */
+  let LAND_MASSES = [];
+  let LAND_MASS_LABEL = {};
+
+  /** Well-known islands matched by centroid (borough multipolygon parts). */
+  const NAMED_ISLANDS = [
+    { id: 'governors', label: 'Governors Island', lat: 40.6897, lng: -74.0172 },
+    { id: 'roosevelt', label: 'Roosevelt Island', lat: 40.7616, lng: -73.9505 },
+    { id: 'randalls', label: "Randall's Island", lat: 40.7924, lng: -73.9259 },
+    { id: 'rikers', label: 'Rikers Island', lat: 40.7935, lng: -73.8807 },
+    { id: 'cityisland', label: 'City Island', lat: 40.8488, lng: -73.7869 },
+    { id: 'hartisland', label: 'Hart Island', lat: 40.8536, lng: -73.7717 },
+    { id: 'rockaway', label: 'Rockaway Peninsula', lat: 40.5887, lng: -73.8103 },
+    { id: 'broadchannel', label: 'Broad Channel', lat: 40.6088, lng: -73.8231 },
+  ];
 
   let colorIdx = 0;
   let questions = [];
@@ -264,7 +273,7 @@
    * Bridge Park piers among them — are filed under Manhattan. Every such sliver is
    * under eight acres, while the smallest real outlying landmass (Marble Hill) is
    * seventy-five, so dropping small detached parts removes the piers and keeps
-   * Governors, Roosevelt, Randall's and Wards islands. No station sits on one.
+   * Governors, Roosevelt, and Randall's / Wards islands for land-mass matching.
    */
   const MIN_PART_SQ_M = 40 * 4046.86;
 
@@ -459,37 +468,121 @@
   const otherLandMassCache = {};
 
   /**
-   * Marble Hill is Manhattan borough but on the Bronx mainland. Roosevelt Island
-   * and Governors Island stay with Manhattan island; Brooklyn and Queens are one mass.
+   * Detached borough multipolygon parts after the pier filter. Marble Hill is
+   * Manhattan borough but sits on the mainland with the Bronx.
    */
-  function splitManhattanParts() {
-    const man = boroughLand('Manhattan');
-    if (!man) return { marbleHill: null, islands: null };
-    if (man.geometry.type !== 'MultiPolygon') {
-      return { marbleHill: null, islands: man };
-    }
-    let marbleHill = null;
-    const islandParts = [];
-    for (const p of man.geometry.coordinates) {
-      const c = turf.centroid(turf.polygon(p));
+  function boroughLandParts(name) {
+    const land = boroughLand(name);
+    if (!land) return [];
+    const polys = land.geometry.type === 'MultiPolygon'
+      ? land.geometry.coordinates
+      : [land.geometry.coordinates];
+    return polys.map((coords, i) => {
+      const poly = turf.polygon(coords);
+      let area = 0;
+      try { area = turf.area(poly); } catch (_) { area = 0; }
+      const c = turf.centroid(poly);
       const [lng, lat] = c.geometry.coordinates;
-      if (lat >= 40.862 && lng <= -73.908) marbleHill = p;
-      else islandParts.push(p);
-    }
-    return {
-      marbleHill: marbleHill ? turf.polygon(marbleHill) : null,
-      islands: islandParts.length ? turf.multiPolygon(islandParts) : null,
-    };
+      return { i, coords, poly, area, lng, lat };
+    }).sort((a, b) => b.area - a.area);
   }
 
+  function isMarbleHillPart(part) {
+    return part.lat >= 40.862 && part.lng <= -73.908;
+  }
+
+  function matchNamedIsland(lat, lng) {
+    let best = null;
+    let bestD = 0.015;
+    for (const n of NAMED_ISLANDS) {
+      const d = Math.hypot(lat - n.lat, lng - n.lng);
+      if (d < bestD) { bestD = d; best = n; }
+    }
+    return best;
+  }
+
+  /**
+   * Land masses:
+   * - mainland: Bronx + NJ + Marble Hill (one connected continent)
+   * - longisland: Brooklyn + Queens main bodies (one island)
+   * - manhattan / staten: each borough's main island body
+   * - every other detached part: its own mass (City Island, Roosevelt, etc.)
+   */
   function buildLandMassPolys() {
     if (landMassPolyCache._built) return;
-    const { marbleHill, islands } = splitManhattanParts();
-    const mainlandParts = [boroughLand('Bronx'), boroughPoly('Jersey'), marbleHill].filter(Boolean);
-    const longislandParts = [boroughLand('Brooklyn'), boroughLand('Queens')].filter(Boolean);
-    landMassPolyCache.mainland = mainlandParts.length ? Geo().unionMany(mainlandParts) : null;
-    landMassPolyCache.islands = islands;
-    landMassPolyCache.longisland = longislandParts.length ? Geo().unionMany(longislandParts) : null;
+
+    LAND_MASSES = [];
+    LAND_MASS_LABEL = {};
+    const usedNamed = new Set();
+    let anon = 0;
+
+    function addMass(id, label, poly) {
+      if (!poly) return;
+      landMassPolyCache[id] = poly;
+      LAND_MASSES.push(id);
+      LAND_MASS_LABEL[id] = label;
+    }
+
+    const manParts = boroughLandParts('Manhattan');
+    const bronxParts = boroughLandParts('Bronx');
+    const bkParts = boroughLandParts('Brooklyn');
+    const qnParts = boroughLandParts('Queens');
+    const siParts = boroughLandParts('Staten Island');
+
+    const marble = manParts.filter(isMarbleHillPart);
+    const manRest = manParts.filter(p => !isMarbleHillPart(p));
+    const bronxMain = bronxParts[0] || null;
+    const bkMain = bkParts[0] || null;
+    const qnMain = qnParts[0] || null;
+    const siMain = siParts[0] || null;
+    const manMain = manRest[0] || null;
+
+    const mainlandBits = [
+      bronxMain?.poly,
+      boroughPoly('Jersey'),
+      ...marble.map(p => p.poly),
+    ].filter(Boolean);
+    addMass(
+      'mainland',
+      'Mainland (Bronx / NJ / Marble Hill)',
+      mainlandBits.length ? Geo().unionMany(mainlandBits) : null,
+    );
+
+    addMass('manhattan', 'Manhattan Island', manMain?.poly || null);
+
+    const liBits = [bkMain?.poly, qnMain?.poly].filter(Boolean);
+    addMass(
+      'longisland',
+      'Brooklyn / Queens',
+      liBits.length ? Geo().unionMany(liBits) : null,
+    );
+
+    addMass('staten', 'Staten Island', siMain?.poly || null);
+
+    const leftovers = [
+      ...manRest.slice(1).map(p => ({ ...p, boro: 'Manhattan' })),
+      ...bronxParts.slice(1).map(p => ({ ...p, boro: 'Bronx' })),
+      ...bkParts.slice(1).map(p => ({ ...p, boro: 'Brooklyn' })),
+      ...qnParts.slice(1).map(p => ({ ...p, boro: 'Queens' })),
+      ...siParts.slice(1).map(p => ({ ...p, boro: 'Staten Island' })),
+    ];
+
+    for (const part of leftovers) {
+      const named = matchNamedIsland(part.lat, part.lng);
+      let id;
+      let label;
+      if (named && !usedNamed.has(named.id)) {
+        usedNamed.add(named.id);
+        id = named.id;
+        label = named.label;
+      } else {
+        anon += 1;
+        id = `island_${anon}`;
+        label = `${part.boro} island ${anon}`;
+      }
+      addMass(id, label, part.poly);
+    }
+
     landMassPolyCache._built = true;
   }
 
@@ -552,7 +645,7 @@
   function landExceptMass(name) {
     if (otherLandMassCache[name] !== undefined) return otherLandMassCache[name];
     const parts = LAND_MASSES.filter(m => m !== name).map(m => landMassPoly(m)).filter(Boolean);
-    if (parts.length < LAND_MASSES.length - 1) return null;
+    if (!parts.length) return null;
     otherLandMassCache[name] = Geo().unionMany(parts);
     return otherLandMassCache[name];
   }
@@ -562,6 +655,8 @@
     for (const k of Object.keys(landMassIndexCache)) delete landMassIndexCache[k];
     for (const k of Object.keys(landMassEdgeCache)) delete landMassEdgeCache[k];
     for (const k of Object.keys(otherLandMassCache)) delete otherLandMassCache[k];
+    LAND_MASSES = [];
+    LAND_MASS_LABEL = {};
   }
 
   function clearBoroughCaches() {
