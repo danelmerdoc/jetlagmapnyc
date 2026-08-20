@@ -477,14 +477,18 @@
     const polys = land.geometry.type === 'MultiPolygon'
       ? land.geometry.coordinates
       : [land.geometry.coordinates];
-    return polys.map((coords, i) => {
-      const poly = turf.polygon(coords);
-      let area = 0;
-      try { area = turf.area(poly); } catch (_) { area = 0; }
-      const c = turf.centroid(poly);
-      const [lng, lat] = c.geometry.coordinates;
-      return { i, coords, poly, area, lng, lat };
-    }).sort((a, b) => b.area - a.area);
+    const out = [];
+    for (let i = 0; i < polys.length; i++) {
+      try {
+        const poly = turf.polygon(polys[i]);
+        let area = 0;
+        try { area = turf.area(poly); } catch (_) { area = 0; }
+        const c = turf.centroid(poly);
+        const [lng, lat] = c.geometry.coordinates;
+        out.push({ i, coords: polys[i], poly, area, lng, lat });
+      } catch (_) { /* skip invalid rings */ }
+    }
+    return out.sort((a, b) => b.area - a.area);
   }
 
   function isMarbleHillPart(part) {
@@ -523,67 +527,74 @@
       LAND_MASS_LABEL[id] = label;
     }
 
-    const manParts = boroughLandParts('Manhattan');
-    const bronxParts = boroughLandParts('Bronx');
-    const bkParts = boroughLandParts('Brooklyn');
-    const qnParts = boroughLandParts('Queens');
-    const siParts = boroughLandParts('Staten Island');
+    try {
+      const manParts = boroughLandParts('Manhattan');
+      const bronxParts = boroughLandParts('Bronx');
+      const bkParts = boroughLandParts('Brooklyn');
+      const qnParts = boroughLandParts('Queens');
+      const siParts = boroughLandParts('Staten Island');
 
-    const marble = manParts.filter(isMarbleHillPart);
-    const manRest = manParts.filter(p => !isMarbleHillPart(p));
-    const bronxMain = bronxParts[0] || null;
-    const bkMain = bkParts[0] || null;
-    const qnMain = qnParts[0] || null;
-    const siMain = siParts[0] || null;
-    const manMain = manRest[0] || null;
+      const marble = manParts.filter(isMarbleHillPart);
+      const manRest = manParts.filter(p => !isMarbleHillPart(p));
+      const bronxMain = bronxParts[0] || null;
+      const bkMain = bkParts[0] || null;
+      const qnMain = qnParts[0] || null;
+      const siMain = siParts[0] || null;
+      const manMain = manRest[0] || null;
 
-    const mainlandBits = [
-      bronxMain?.poly,
-      boroughPoly('Jersey'),
-      ...marble.map(p => p.poly),
-    ].filter(Boolean);
-    addMass(
-      'mainland',
-      'Mainland (Bronx / NJ / Marble Hill)',
-      mainlandBits.length ? Geo().unionMany(mainlandBits) : null,
-    );
-
-    addMass('manhattan', 'Manhattan Island', manMain?.poly || null);
-
-    const liBits = [bkMain?.poly, qnMain?.poly].filter(Boolean);
-    addMass(
-      'longisland',
-      'Brooklyn / Queens',
-      liBits.length ? Geo().unionMany(liBits) : null,
-    );
-
-    addMass('staten', 'Staten Island', siMain?.poly || null);
-
-    const leftovers = [
-      ...manRest.slice(1).map(p => ({ ...p, boro: 'Manhattan' })),
-      ...bronxParts.slice(1).map(p => ({ ...p, boro: 'Bronx' })),
-      ...bkParts.slice(1).map(p => ({ ...p, boro: 'Brooklyn' })),
-      ...qnParts.slice(1).map(p => ({ ...p, boro: 'Queens' })),
-      ...siParts.slice(1).map(p => ({ ...p, boro: 'Staten Island' })),
-    ];
-
-    for (const part of leftovers) {
-      const named = matchNamedIsland(part.lat, part.lng);
-      let id;
-      let label;
-      if (named && !usedNamed.has(named.id)) {
-        usedNamed.add(named.id);
-        id = named.id;
-        label = named.label;
-      } else {
-        anon += 1;
-        id = `island_${anon}`;
-        label = `${part.boro} island ${anon}`;
+      const mainlandBits = [
+        bronxMain && bronxMain.poly,
+        boroughPoly('Jersey'),
+        ...marble.map(p => p.poly),
+      ].filter(Boolean);
+      let mainlandPoly = null;
+      if (mainlandBits.length === 1) mainlandPoly = mainlandBits[0];
+      else if (mainlandBits.length > 1) {
+        try { mainlandPoly = Geo().unionMany(mainlandBits); } catch (_) { mainlandPoly = mainlandBits[0]; }
       }
-      addMass(id, label, part.poly);
+      addMass('mainland', 'Mainland (Bronx / NJ / Marble Hill)', mainlandPoly);
+
+      addMass('manhattan', 'Manhattan Island', manMain && manMain.poly);
+
+      const liBits = [bkMain && bkMain.poly, qnMain && qnMain.poly].filter(Boolean);
+      let liPoly = null;
+      if (liBits.length === 1) liPoly = liBits[0];
+      else if (liBits.length > 1) {
+        try { liPoly = Geo().unionMany(liBits); } catch (_) { liPoly = liBits[0]; }
+      }
+      addMass('longisland', 'Brooklyn / Queens', liPoly);
+
+      addMass('staten', 'Staten Island', siMain && siMain.poly);
+
+      const leftovers = [
+        ...manRest.slice(1).map(p => Object.assign({ boro: 'Manhattan' }, p)),
+        ...bronxParts.slice(1).map(p => Object.assign({ boro: 'Bronx' }, p)),
+        ...bkParts.slice(1).map(p => Object.assign({ boro: 'Brooklyn' }, p)),
+        ...qnParts.slice(1).map(p => Object.assign({ boro: 'Queens' }, p)),
+        ...siParts.slice(1).map(p => Object.assign({ boro: 'Staten Island' }, p)),
+      ];
+
+      for (const part of leftovers) {
+        const named = matchNamedIsland(part.lat, part.lng);
+        let id;
+        let label;
+        if (named && !usedNamed.has(named.id)) {
+          usedNamed.add(named.id);
+          id = named.id;
+          label = named.label;
+        } else {
+          anon += 1;
+          id = `island_${anon}`;
+          label = `${part.boro} island ${anon}`;
+        }
+        addMass(id, label, part.poly);
+      }
+    } catch (err) {
+      console.warn('Land mass build failed', err);
     }
 
-    landMassPolyCache._built = true;
+    // Only lock the cache once we actually produced masses; otherwise retry later.
+    if (LAND_MASSES.length) landMassPolyCache._built = true;
   }
 
   function landMassPoly(id) {
@@ -603,11 +614,13 @@
 
   function landMassAt(lng, lat) {
     if (![lng, lat].every(Number.isFinite)) return null;
+    buildLandMassPolys();
+    if (!LAND_MASSES.length) return null;
     for (const id of LAND_MASSES) {
-      const poly = landMassPoly(id);
+      const poly = landMassPolyCache[id];
       if (poly && turf.booleanPointInPolygon([lng, lat], poly)) return id;
     }
-    let best = LAND_MASSES[0];
+    let best = null;
     let bestD = Infinity;
     for (const id of LAND_MASSES) {
       const index = landMassIndex(id);
@@ -629,6 +642,7 @@
   }
 
   function possibleLandMasses(st) {
+    buildLandMassPolys();
     const h = hideRadiusMi + 1e-9;
     const out = [];
     for (const id of LAND_MASSES) {
